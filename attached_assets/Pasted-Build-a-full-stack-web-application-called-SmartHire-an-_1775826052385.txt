@@ -1,0 +1,99 @@
+Build a full-stack web application called SmartHire — an AI-powered L1 interview assessment platform. This is enterprise-grade production software, not a prototype.
+
+## WHAT IT DOES
+An AI bot conducts a complete job interview autonomously:
+1. Recruiter creates an interview by pasting a Job Description
+2. AI generates 6-8 targeted interview questions from the JD
+3. Candidate joins and answers questions (text input to simulate STT for now)
+4. AI evaluates every answer against a scoring rubric
+5. Recruiter receives a structured scorecard with ratings, verdict, and recommendations
+
+## TECH STACK
+- Frontend: React + Tailwind CSS
+- Backend: Node.js + Express
+- Database: SQLite (via better-sqlite3) for persistence
+- AI: OpenAI GPT-4o via API (use process.env.OPENAI_API_KEY)
+- PDF: puppeteer or html-pdf for scorecard export
+
+## PAGES TO BUILD
+
+### 1. Recruiter Dashboard (/)
+- List of all interviews with candidate name, date, status, overall score
+- "New Interview" button
+- Click any row to view scorecard
+
+### 2. Create Interview (/create)
+- Input: Recruiter name, Candidate name, Candidate email, Job Title
+- Large textarea: paste Job Description
+- Button: "Generate Interview" → calls backend to generate questions via GPT-4o
+- Shows generated questions for review before confirming
+- On confirm: saves to DB, generates a shareable candidate link
+
+### 3. Candidate Interview Page (/interview/:id)
+- Welcomes candidate by name
+- Shows one question at a time
+- Candidate types their answer and clicks Next
+- Progress bar showing Q3 of 7 etc
+- On last question: "Submit Interview" button
+- After submit: "Thank you, your interview is complete" screen
+
+### 4. Processing Page
+- After candidate submits, backend evaluates all answers via GPT-4o
+- Shows "AI is evaluating your responses..." loading state
+- Automatically redirects recruiter dashboard when done
+
+### 5. Scorecard Page (/scorecard/:id)
+- Candidate name, job title, date, interview duration
+- SCORES (0-10 with visual bar):
+  * Technical Knowledge
+  * Communication Clarity  
+  * Problem Solving
+  * Role Relevance
+  * Overall Score (weighted average)
+- VERDICT badge: Strong Hire / Hire / Maybe / No Hire
+- Strengths (3 bullet points)
+- Areas to Probe (2 bullet points)
+- Recruiter Summary (2-3 sentences)
+- Recruiter Action (1 actionable recommendation)
+- Full Q&A transcript with per-answer score
+- Export to PDF button
+
+## BACKEND API ROUTES
+POST /api/interviews - create interview, generate questions
+GET /api/interviews - list all interviews
+GET /api/interviews/:id - get single interview
+POST /api/interviews/:id/submit - submit candidate answers, trigger evaluation
+GET /api/interviews/:id/scorecard - get scorecard
+
+## DATABASE SCHEMA
+Tables: interviews, questions, answers, scorecards
+
+## GPT-4o PROMPTS
+
+Question generation system prompt:
+"You are SmartHire, an expert technical interviewer. Given a Job Description, generate exactly 7 interview questions. Mix: 3 technical, 2 behavioral, 2 situational. Return ONLY a JSON array of strings."
+
+Evaluation system prompt:
+"You are SmartHire Evaluation Engine. Evaluate candidate answers and return ONLY this JSON:
+{
+  scores: { technical: 0-10, communication: 0-10, problemSolving: 0-10, roleRelevance: 0-10 },
+  overall: 0-10,
+  verdict: 'Strong Hire' | 'Hire' | 'Maybe' | 'No Hire',
+  strengths: [3 strings],
+  improvements: [2 strings],
+  summary: '2-3 sentence recruiter summary',
+  recruiterNote: '1 actionable sentence',
+  perAnswer: [{ questionIndex: 0, score: 0-10, note: 'one line feedback' }]
+}"
+
+## DESIGN REQUIREMENTS
+- Clean, professional enterprise UI — white/light grey background, navy and orange accents
+- Fully responsive
+- Loading states on all AI calls
+- Error handling with user-friendly messages
+- No placeholder content — everything must be functional
+
+## ENVIRONMENT
+OPENAI_API_KEY is available in environment variables.
+
+Start by setting up the project structure, installing dependencies, then build backend first, then frontend. Make sure the full flow works end to end: create interview → candidate answers → AI evaluates → scorecard displays.
