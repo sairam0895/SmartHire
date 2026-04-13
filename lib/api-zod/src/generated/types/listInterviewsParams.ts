@@ -5,8 +5,8 @@
  * SmartHire API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { AnswerInput } from "./answerInput";
 
-export interface SubmitInterviewBody {
-  answers: AnswerInput[];
-}
+export type ListInterviewsParams = {
+  source?: string;
+  status?: string;
+};

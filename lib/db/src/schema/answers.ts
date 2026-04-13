@@ -12,6 +12,10 @@ export const answersTable = pgTable("answers", {
   answerText: text("answer_text").notNull(),
   score: real("score"),
   feedback: text("feedback"),
+  confidenceScore: real("confidence_score"),
+  fillerWordCount: integer("filler_word_count"),
+  pauseCount: integer("pause_count"),
+  speechDurationSeconds: integer("speech_duration_seconds"),
 });
 
 export const insertAnswerSchema = createInsertSchema(answersTable).omit({

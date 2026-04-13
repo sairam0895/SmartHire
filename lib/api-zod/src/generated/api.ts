@@ -8,7 +8,6 @@
 import * as zod from "zod";
 
 /**
- * Returns server health status
  * @summary Health check
  */
 export const HealthCheckResponse = zod.object({
@@ -16,9 +15,13 @@ export const HealthCheckResponse = zod.object({
 });
 
 /**
- * Returns all interviews with their status and scores
  * @summary List all interviews
  */
+export const ListInterviewsQueryParams = zod.object({
+  source: zod.coerce.string().optional(),
+  status: zod.coerce.string().optional(),
+});
+
 export const ListInterviewsResponseItem = zod.object({
   id: zod.number(),
   recruiterName: zod.string(),
@@ -32,11 +35,12 @@ export const ListInterviewsResponseItem = zod.object({
   createdAt: zod.string(),
   completedAt: zod.string().nullable(),
   duration: zod.number().nullable(),
+  llmUsed: zod.string().nullable(),
+  source: zod.string().nullable(),
 });
 export const ListInterviewsResponse = zod.array(ListInterviewsResponseItem);
 
 /**
- * Creates a new interview from a job description and generates questions via AI
  * @summary Create interview and generate questions
  */
 export const CreateInterviewBody = zod.object({
@@ -48,7 +52,22 @@ export const CreateInterviewBody = zod.object({
 });
 
 /**
- * Returns interview details with questions
+ * @summary Get interview statistics
+ */
+export const GetInterviewStatsResponse = zod.object({
+  total: zod.number(),
+  completed: zod.number(),
+  pending: zod.number(),
+  averageScore: zod.number().nullable(),
+  verdictBreakdown: zod.object({
+    strongHire: zod.number(),
+    hire: zod.number(),
+    maybe: zod.number(),
+    noHire: zod.number(),
+  }),
+});
+
+/**
  * @summary Get a single interview
  */
 export const GetInterviewParams = zod.object({
@@ -68,6 +87,8 @@ export const GetInterviewResponse = zod.object({
   createdAt: zod.string(),
   completedAt: zod.string().nullable(),
   duration: zod.number().nullable(),
+  llmUsed: zod.string().nullable(),
+  source: zod.string().nullable(),
   questions: zod.array(
     zod.object({
       id: zod.number(),
@@ -80,7 +101,6 @@ export const GetInterviewResponse = zod.object({
 });
 
 /**
- * Submits candidate answers and triggers AI evaluation
  * @summary Submit candidate answers and trigger evaluation
  */
 export const SubmitInterviewParams = zod.object({
@@ -92,6 +112,10 @@ export const SubmitInterviewBody = zod.object({
     zod.object({
       questionIndex: zod.number(),
       answerText: zod.string(),
+      confidenceScore: zod.number().nullish(),
+      fillerWordCount: zod.number().nullish(),
+      pauseCount: zod.number().nullish(),
+      speechDurationSeconds: zod.number().nullish(),
     }),
   ),
 });
@@ -103,6 +127,7 @@ export const SubmitInterviewResponse = zod.object({
   communicationScore: zod.number(),
   problemSolvingScore: zod.number(),
   roleRelevanceScore: zod.number(),
+  speechConfidenceScore: zod.number().nullable(),
   overallScore: zod.number(),
   verdict: zod.string(),
   strengths: zod.array(zod.string()),
@@ -113,7 +138,6 @@ export const SubmitInterviewResponse = zod.object({
 });
 
 /**
- * Returns the AI-generated scorecard for a completed interview
  * @summary Get scorecard for an interview
  */
 export const GetScorecardParams = zod.object({
@@ -128,6 +152,7 @@ export const GetScorecardResponse = zod.object({
     communicationScore: zod.number(),
     problemSolvingScore: zod.number(),
     roleRelevanceScore: zod.number(),
+    speechConfidenceScore: zod.number().nullable(),
     overallScore: zod.number(),
     verdict: zod.string(),
     strengths: zod.array(zod.string()),
@@ -149,6 +174,8 @@ export const GetScorecardResponse = zod.object({
     createdAt: zod.string(),
     completedAt: zod.string().nullable(),
     duration: zod.number().nullable(),
+    llmUsed: zod.string().nullable(),
+    source: zod.string().nullable(),
   }),
   answers: zod.array(
     zod.object({
@@ -158,6 +185,10 @@ export const GetScorecardResponse = zod.object({
       answerText: zod.string(),
       score: zod.number().nullable(),
       feedback: zod.string().nullable(),
+      confidenceScore: zod.number().nullable(),
+      fillerWordCount: zod.number().nullable(),
+      pauseCount: zod.number().nullable(),
+      speechDurationSeconds: zod.number().nullable(),
     }),
   ),
   questions: zod.array(
@@ -172,18 +203,37 @@ export const GetScorecardResponse = zod.object({
 });
 
 /**
- * Returns aggregated stats for the dashboard
- * @summary Get interview statistics
+ * @summary Bot health check
  */
-export const GetInterviewStatsResponse = zod.object({
-  total: zod.number(),
-  completed: zod.number(),
-  pending: zod.number(),
-  averageScore: zod.number().nullable(),
-  verdictBreakdown: zod.object({
-    strongHire: zod.number(),
-    hire: zod.number(),
-    maybe: zod.number(),
-    noHire: zod.number(),
-  }),
+export const GetBotHealthResponse = zod.object({
+  status: zod.string(),
+  ollamaAvailable: zod.boolean(),
+  gptAvailable: zod.boolean(),
+  timestamp: zod.string(),
+});
+
+/**
+ * @summary Teams bot submit interview
+ */
+export const BotSubmitInterviewBody = zod.object({
+  candidateName: zod.string(),
+  recruiterEmail: zod.string(),
+  jobTitle: zod.string(),
+  jobDescription: zod.string(),
+  answers: zod.array(
+    zod.object({
+      questionText: zod.string(),
+      answerText: zod.string(),
+      confidenceScore: zod.number().nullish(),
+      fillerWordCount: zod.number().nullish(),
+      pauseCount: zod.number().nullish(),
+      speechDurationSeconds: zod.number().nullish(),
+    }),
+  ),
+});
+
+export const BotSubmitInterviewResponse = zod.object({
+  interviewId: zod.number(),
+  scorecardId: zod.number(),
+  scorecardUrl: zod.string(),
 });

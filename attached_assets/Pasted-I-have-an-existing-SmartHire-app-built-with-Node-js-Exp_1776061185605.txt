@@ -1,0 +1,161 @@
+I have an existing SmartHire app built with Node.js + Express + 
+React + SQLite + OpenAI GPT-4o. I need to upgrade it to match 
+our enterprise architecture without breaking what's already working.
+
+## WHAT'S ALREADY BUILT (DO NOT BREAK)
+- Recruiter creates interview with JD
+- GPT-4o generates questions
+- Candidate answers questions via text input
+- GPT-4o evaluates answers
+- Scorecard displays with ratings and verdict
+- SQLite database with interviews, questions, answers, scorecards
+
+## UPGRADE 1 — LLM ORCHESTRATION (Ollama Fallback)
+Currently using GPT-4o for everything. Add this logic:
+
+For QUESTION GENERATION only:
+- Try Ollama first: POST http://localhost:11434/api/generate
+  with model: "llama3", set 3 second timeout
+- If Ollama succeeds → use it (faster, free)
+- If Ollama fails or times out → silently fallback to GPT-4o
+- Log which LLM was used: add llmUsed field to interviews table
+
+For EVALUATION:
+- Always use GPT-4o (accuracy critical, do not change this)
+
+## UPGRADE 2 — SPEECH SIGNALS SUPPORT
+The app currently only accepts text answers. Add support for 
+speech analytics data that will come from Azure Speech Services
+when the real Teams bot is connected.
+
+Database: Add these columns to answers table:
+- confidenceScore REAL (0.0 to 1.0, nullable)
+- fillerWordCount INTEGER (nullable)  
+- pauseCount INTEGER (nullable)
+- speechDurationSeconds INTEGER (nullable)
+
+API: Update POST /api/interviews/:id/submit to accept:
+{
+  answers: [
+    {
+      questionIndex: 0,
+      answerText: "candidate answer",
+      confidenceScore: 0.87,      // optional, from Azure Speech
+      fillerWordCount: 3,          // optional
+      pauseCount: 2,               // optional  
+      speechDurationSeconds: 45    // optional
+    }
+  ]
+}
+All speech fields are optional — if missing, score normally.
+If present, include them as context in the GPT-4o eval prompt.
+
+Update evaluation system prompt to:
+"You are SmartHire Evaluation Engine. Evaluate candidate answers.
+If speech signals are provided (confidence, filler words, pauses),
+factor them into the communication score.
+Return ONLY this JSON:
+{
+  scores: {
+    technical: 0-10,
+    communication: 0-10,
+    problemSolving: 0-10,
+    roleRelevance: 0-10,
+    speechConfidence: 0-10
+  },
+  overall: 0-10,
+  verdict: 'Strong Hire'|'Hire'|'Maybe'|'No Hire',
+  strengths: [3 strings],
+  improvements: [2 strings],
+  summary: '2-3 sentence recruiter summary',
+  recruiterNote: '1 actionable sentence',
+  perAnswer: [{
+    questionIndex: number,
+    score: 0-10,
+    note: 'one line feedback'
+  }]
+}"
+
+## UPGRADE 3 — SCORECARD UI ENHANCEMENTS
+Add a Speech Signals panel to the scorecard page:
+- Show confidence %, filler word count, pause count, 
+  duration per answer
+- If data is null → show "Awaiting Teams Integration" badge
+- Add speechConfidence as a 5th score dimension in the 
+  score bars (show as N/A if no speech data)
+- Add a small "Source" badge on each answer: 
+  "Text Input" or "Teams Audio" based on whether 
+  speech data is present
+
+## UPGRADE 4 — TEAMS BOT READY API
+Add a dedicated endpoint the .NET Teams bot will call:
+
+POST /api/bot/submit-interview
+Headers: x-api-key: process.env.BOT_API_KEY
+Body: {
+  candidateName: string,
+  recruiterEmail: string,
+  jobTitle: string,
+  jobDescription: string,
+  answers: [
+    {
+      questionText: string,
+      answerText: string,
+      confidenceScore: number,
+      fillerWordCount: number,
+      pauseCount: number,
+      speechDurationSeconds: number
+    }
+  ]
+}
+- Creates interview record
+- Stores all answers with speech signals
+- Triggers GPT-4o evaluation
+- Returns { interviewId, scorecardId, scorecardUrl }
+- This endpoint is the bridge between the Teams bot and this app
+
+Also add GET /api/bot/health 
+Returns: { status: "ok", ollamaAvailable: boolean, 
+           gptAvailable: boolean, timestamp: string }
+The .NET bot will ping this before each interview.
+
+## UPGRADE 5 — PDF EXPORT
+Add Export to PDF button on scorecard page.
+GET /api/scorecard/:id/pdf
+- Generates clean PDF of the scorecard
+- Include: candidate name, job title, date, all scores, 
+  verdict, strengths, improvements, summary, full Q&A
+- Use pdfkit or html-pdf
+- Returns PDF as downloadable file
+
+## UPGRADE 6 — DASHBOARD IMPROVEMENTS  
+Update recruiter dashboard to show:
+- Source column: "Web" or "Teams Bot" 
+  (based on how interview was created)
+- LLM Used column: "GPT-4o" or "LLaMA 3B + GPT-4o"
+- Filter by: All / Web / Teams Bot / Pending / Completed
+- Summary stats bar at top: 
+  Total Interviews | Avg Score | Strong Hires | No Hires
+
+## WHAT NOT TO CHANGE
+- Existing create interview flow
+- Existing candidate answer page  
+- Existing scoring logic
+- Database records already created
+- All existing API routes (only add, don't modify signatures)
+
+## MIGRATION
+Write a safe DB migration script that:
+- Adds new columns to existing tables (ALTER TABLE, not recreate)
+- Sets all new columns as nullable so existing data is unaffected
+- Runs automatically on server start if columns don't exist
+
+Do upgrades in this order:
+1. DB migration first
+2. Backend API upgrades
+3. LLM orchestration
+4. Frontend scorecard enhancements  
+5. Dashboard improvements
+6. PDF export last
+
+Test each upgrade works before moving to the next.

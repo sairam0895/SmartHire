@@ -15,7 +15,8 @@ SmartHire is an AI-powered L1 interview assessment platform. Recruiters create i
 - **Validation**: Zod (`zod/v4`), `drizzle-zod`
 - **API codegen**: Orval (from OpenAPI spec)
 - **Build**: esbuild (CJS bundle)
-- **AI**: OpenAI GPT via Replit AI Integrations (no API key needed)
+- **AI**: OpenAI GPT via Replit AI Integrations (no API key needed) + Ollama fallback for question generation
+- **PDF**: pdfkit (externalized from esbuild bundle)
 - **Frontend**: React + Vite + Tailwind CSS
 
 ## Architecture
@@ -30,10 +31,22 @@ SmartHire is an AI-powered L1 interview assessment platform. Recruiters create i
 
 ## Key Pages
 
-- `/` — Recruiter Dashboard with interview list and stats
-- `/create` — Create interview (paste JD, AI generates questions)
+- `/` — Recruiter Dashboard with interview list, stats, filters, source/LLM columns
+- `/create` — Create interview (paste JD, AI generates questions via Ollama or GPT)
 - `/interview/:id` — Candidate interview page (one question at a time)
-- `/scorecard/:id` — Scorecard with scores, verdict, Q&A transcript, PDF export
+- `/scorecard/:id` — Scorecard with 5 score dimensions, speech signals panel, source badge, PDF export
+
+## API Routes
+
+- `GET /api/interviews` — list all interviews
+- `POST /api/interviews` — create interview + generate questions
+- `GET /api/interviews/:id` — get single interview
+- `POST /api/interviews/:id/submit` — submit answers (with optional speech signals) + trigger evaluation
+- `GET /api/interviews/:id/scorecard` — get scorecard with answers and questions
+- `GET /api/interviews/stats` — stats (total, completed, pending, averageScore, verdictBreakdown)
+- `GET /api/scorecard/:id/pdf` — download scorecard as PDF
+- `GET /api/bot/health` — Teams bot health check (ollamaAvailable, gptAvailable)
+- `POST /api/bot/submit-interview` — Teams bot endpoint (requires `x-api-key: BOT_API_KEY`)
 
 ## Key Commands
 
@@ -46,14 +59,23 @@ SmartHire is an AI-powered L1 interview assessment platform. Recruiters create i
 ## AI Integration
 
 Uses Replit AI Integrations for OpenAI access (billed to Replit credits, no user API key required).
-- Question generation: `gpt-5.2` — generates 7 targeted questions from job descriptions
-- Answer evaluation: `gpt-5.2` — scores answers across 4 dimensions and produces a verdict
+
+- **Question generation**: Tries Ollama (llama3) first with 3s timeout → falls back to `gpt-5.2`. Sets `llmUsed` field to "llama3+gpt" or "gpt".
+- **Answer evaluation**: Always uses `gpt-5.2`. Scores across 5 dimensions (technical, communication, problemSolving, roleRelevance, speechConfidence). If speech signals provided, factors them into communication and speechConfidence scores.
 
 ## Database Schema
 
-- `interviews` — main interview records with status, verdict, scores
+- `interviews` — main interview records with status, verdict, scores, `llmUsed`, `source` ("web" or "bot")
 - `questions` — AI-generated questions per interview
-- `answers` — candidate answers with per-answer AI scores
-- `scorecards` — AI-generated evaluation with all score dimensions
+- `answers` — candidate answers with per-answer scores + optional speech signals (confidenceScore, fillerWordCount, pauseCount, speechDurationSeconds)
+- `scorecards` — AI evaluation with 5 score dimensions including `speechConfidenceScore` (nullable)
+
+## Teams Bot Integration
+
+The `.NET Teams bot` calls:
+1. `GET /api/bot/health` — to check system readiness
+2. `POST /api/bot/submit-interview` with `x-api-key: <BOT_API_KEY>` — to submit a complete Teams interview with Azure Speech signals
+
+Set `BOT_API_KEY` environment secret to enable the bot endpoint. Without it, the endpoint returns 503.
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

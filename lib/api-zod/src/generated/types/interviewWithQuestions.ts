@@ -25,5 +25,9 @@ export interface InterviewWithQuestions {
   completedAt: string | null;
   /** @nullable */
   duration: number | null;
+  /** @nullable */
+  llmUsed: string | null;
+  /** @nullable */
+  source: string | null;
   questions: Question[];
 }

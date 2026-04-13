@@ -10,6 +10,7 @@ export const scorecardsTable = pgTable("scorecards", {
   communicationScore: real("communication_score").notNull(),
   problemSolvingScore: real("problem_solving_score").notNull(),
   roleRelevanceScore: real("role_relevance_score").notNull(),
+  speechConfidenceScore: real("speech_confidence_score"),
   overallScore: real("overall_score").notNull(),
   verdict: text("verdict").notNull(),
   strengths: text("strengths").array().notNull(),

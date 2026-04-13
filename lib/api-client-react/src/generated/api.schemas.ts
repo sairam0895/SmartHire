@@ -40,6 +40,10 @@ export interface Interview {
   completedAt: string | null;
   /** @nullable */
   duration: number | null;
+  /** @nullable */
+  llmUsed: string | null;
+  /** @nullable */
+  source: string | null;
 }
 
 export type QuestionQuestionType =
@@ -68,6 +72,14 @@ export interface Answer {
   score: number | null;
   /** @nullable */
   feedback: string | null;
+  /** @nullable */
+  confidenceScore: number | null;
+  /** @nullable */
+  fillerWordCount: number | null;
+  /** @nullable */
+  pauseCount: number | null;
+  /** @nullable */
+  speechDurationSeconds: number | null;
 }
 
 export type InterviewWithQuestionsStatus =
@@ -97,6 +109,10 @@ export interface InterviewWithQuestions {
   completedAt: string | null;
   /** @nullable */
   duration: number | null;
+  /** @nullable */
+  llmUsed: string | null;
+  /** @nullable */
+  source: string | null;
   questions: Question[];
 }
 
@@ -107,6 +123,8 @@ export interface Scorecard {
   communicationScore: number;
   problemSolvingScore: number;
   roleRelevanceScore: number;
+  /** @nullable */
+  speechConfidenceScore: number | null;
   overallScore: number;
   verdict: string;
   strengths: string[];
@@ -123,6 +141,19 @@ export interface ScorecardWithDetails {
   questions: Question[];
 }
 
+export interface AnswerInput {
+  questionIndex: number;
+  answerText: string;
+  /** @nullable */
+  confidenceScore?: number | null;
+  /** @nullable */
+  fillerWordCount?: number | null;
+  /** @nullable */
+  pauseCount?: number | null;
+  /** @nullable */
+  speechDurationSeconds?: number | null;
+}
+
 export interface CreateInterviewBody {
   recruiterName: string;
   candidateName: string;
@@ -131,13 +162,8 @@ export interface CreateInterviewBody {
   jobDescription: string;
 }
 
-export type SubmitInterviewBodyAnswersItem = {
-  questionIndex: number;
-  answerText: string;
-};
-
 export interface SubmitInterviewBody {
-  answers: SubmitInterviewBodyAnswersItem[];
+  answers: AnswerInput[];
 }
 
 export type InterviewStatsVerdictBreakdown = {
@@ -155,3 +181,42 @@ export interface InterviewStats {
   averageScore: number | null;
   verdictBreakdown: InterviewStatsVerdictBreakdown;
 }
+
+export interface BotHealthStatus {
+  status: string;
+  ollamaAvailable: boolean;
+  gptAvailable: boolean;
+  timestamp: string;
+}
+
+export interface BotAnswerInput {
+  questionText: string;
+  answerText: string;
+  /** @nullable */
+  confidenceScore?: number | null;
+  /** @nullable */
+  fillerWordCount?: number | null;
+  /** @nullable */
+  pauseCount?: number | null;
+  /** @nullable */
+  speechDurationSeconds?: number | null;
+}
+
+export interface BotSubmitInterviewBody {
+  candidateName: string;
+  recruiterEmail: string;
+  jobTitle: string;
+  jobDescription: string;
+  answers: BotAnswerInput[];
+}
+
+export interface BotSubmitInterviewResponse {
+  interviewId: number;
+  scorecardId: number;
+  scorecardUrl: string;
+}
+
+export type ListInterviewsParams = {
+  source?: string;
+  status?: string;
+};

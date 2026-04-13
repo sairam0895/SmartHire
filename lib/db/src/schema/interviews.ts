@@ -15,6 +15,8 @@ export const interviewsTable = pgTable("interviews", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   duration: integer("duration"),
+  llmUsed: text("llm_used"),
+  source: text("source").default("web"),
 });
 
 export const insertInterviewSchema = createInsertSchema(interviewsTable).omit({

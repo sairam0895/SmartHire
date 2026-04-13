@@ -14,13 +14,14 @@ tags:
     description: Interview management
   - name: scorecards
     description: Scorecard retrieval
+  - name: bot
+    description: Teams bot integration
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -34,7 +35,17 @@ paths:
       operationId: listInterviews
       tags: [interviews]
       summary: List all interviews
-      description: Returns all interviews with their status and scores
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
       responses:
         "200":
           description: List of interviews
@@ -48,7 +59,6 @@ paths:
       operationId: createInterview
       tags: [interviews]
       summary: Create interview and generate questions
-      description: Creates a new interview from a job description and generates questions via AI
       requestBody:
         required: true
         content:
@@ -69,12 +79,24 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /interviews/stats:
+    get:
+      operationId: getInterviewStats
+      tags: [interviews]
+      summary: Get interview statistics
+      responses:
+        "200":
+          description: Interview statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InterviewStats"
+
   /interviews/{id}:
     get:
       operationId: getInterview
       tags: [interviews]
       summary: Get a single interview
-      description: Returns interview details with questions
       parameters:
         - name: id
           in: path
@@ -100,7 +122,6 @@ paths:
       operationId: submitInterview
       tags: [interviews]
       summary: Submit candidate answers and trigger evaluation
-      description: Submits candidate answers and triggers AI evaluation
       parameters:
         - name: id
           in: path
@@ -115,7 +136,7 @@ paths:
               $ref: "#/components/schemas/SubmitInterviewBody"
       responses:
         "200":
-          description: Evaluation complete, scorecard created
+          description: Evaluation complete
           content:
             application/json:
               schema:
@@ -127,7 +148,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Interview not found
+          description: Not found
           content:
             application/json:
               schema:
@@ -138,7 +159,6 @@ paths:
       operationId: getScorecard
       tags: [scorecards]
       summary: Get scorecard for an interview
-      description: Returns the AI-generated scorecard for a completed interview
       parameters:
         - name: id
           in: path
@@ -159,19 +179,49 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /interviews/stats:
+  /bot/health:
     get:
-      operationId: getInterviewStats
-      tags: [interviews]
-      summary: Get interview statistics
-      description: Returns aggregated stats for the dashboard
+      operationId: getBotHealth
+      tags: [bot]
+      summary: Bot health check
       responses:
         "200":
-          description: Interview statistics
+          description: Bot health status
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/InterviewStats"
+                $ref: "#/components/schemas/BotHealthStatus"
+
+  /bot/submit-interview:
+    post:
+      operationId: botSubmitInterview
+      tags: [bot]
+      summary: Teams bot submit interview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BotSubmitInterviewBody"
+      responses:
+        "200":
+          description: Interview processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotSubmitInterviewResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
 components:
   schemas:
@@ -219,6 +269,10 @@ components:
           type: ["string", "null"]
         duration:
           type: ["integer", "null"]
+        llmUsed:
+          type: ["string", "null"]
+        source:
+          type: ["string", "null"]
       required:
         - id
         - recruiterName
@@ -232,6 +286,8 @@ components:
         - createdAt
         - completedAt
         - duration
+        - llmUsed
+        - source
 
     Question:
       type: object
@@ -269,6 +325,14 @@ components:
           type: ["number", "null"]
         feedback:
           type: ["string", "null"]
+        confidenceScore:
+          type: ["number", "null"]
+        fillerWordCount:
+          type: ["integer", "null"]
+        pauseCount:
+          type: ["integer", "null"]
+        speechDurationSeconds:
+          type: ["integer", "null"]
       required:
         - id
         - questionId
@@ -276,6 +340,10 @@ components:
         - answerText
         - score
         - feedback
+        - confidenceScore
+        - fillerWordCount
+        - pauseCount
+        - speechDurationSeconds
 
     InterviewWithQuestions:
       type: object
@@ -305,6 +373,10 @@ components:
           type: ["string", "null"]
         duration:
           type: ["integer", "null"]
+        llmUsed:
+          type: ["string", "null"]
+        source:
+          type: ["string", "null"]
         questions:
           type: array
           items:
@@ -322,6 +394,8 @@ components:
         - createdAt
         - completedAt
         - duration
+        - llmUsed
+        - source
         - questions
 
     Scorecard:
@@ -339,6 +413,8 @@ components:
           type: number
         roleRelevanceScore:
           type: number
+        speechConfidenceScore:
+          type: ["number", "null"]
         overallScore:
           type: number
         verdict:
@@ -364,6 +440,7 @@ components:
         - communicationScore
         - problemSolvingScore
         - roleRelevanceScore
+        - speechConfidenceScore
         - overallScore
         - verdict
         - strengths
@@ -393,6 +470,25 @@ components:
         - answers
         - questions
 
+    AnswerInput:
+      type: object
+      properties:
+        questionIndex:
+          type: integer
+        answerText:
+          type: string
+        confidenceScore:
+          type: ["number", "null"]
+        fillerWordCount:
+          type: ["integer", "null"]
+        pauseCount:
+          type: ["integer", "null"]
+        speechDurationSeconds:
+          type: ["integer", "null"]
+      required:
+        - questionIndex
+        - answerText
+
     CreateInterviewBody:
       type: object
       properties:
@@ -419,15 +515,7 @@ components:
         answers:
           type: array
           items:
-            type: object
-            properties:
-              questionIndex:
-                type: integer
-              answerText:
-                type: string
-            required:
-              - questionIndex
-              - answerText
+            $ref: "#/components/schemas/AnswerInput"
       required:
         - answers
 
@@ -464,3 +552,75 @@ components:
         - pending
         - averageScore
         - verdictBreakdown
+
+    BotHealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+        ollamaAvailable:
+          type: boolean
+        gptAvailable:
+          type: boolean
+        timestamp:
+          type: string
+      required:
+        - status
+        - ollamaAvailable
+        - gptAvailable
+        - timestamp
+
+    BotAnswerInput:
+      type: object
+      properties:
+        questionText:
+          type: string
+        answerText:
+          type: string
+        confidenceScore:
+          type: ["number", "null"]
+        fillerWordCount:
+          type: ["integer", "null"]
+        pauseCount:
+          type: ["integer", "null"]
+        speechDurationSeconds:
+          type: ["integer", "null"]
+      required:
+        - questionText
+        - answerText
+
+    BotSubmitInterviewBody:
+      type: object
+      properties:
+        candidateName:
+          type: string
+        recruiterEmail:
+          type: string
+        jobTitle:
+          type: string
+        jobDescription:
+          type: string
+        answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/BotAnswerInput"
+      required:
+        - candidateName
+        - recruiterEmail
+        - jobTitle
+        - jobDescription
+        - answers
+
+    BotSubmitInterviewResponse:
+      type: object
+      properties:
+        interviewId:
+          type: integer
+        scorecardId:
+          type: integer
+        scorecardUrl:
+          type: string
+      required:
+        - interviewId
+        - scorecardId
+        - scorecardUrl

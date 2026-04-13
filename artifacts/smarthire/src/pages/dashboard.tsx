@@ -1,19 +1,24 @@
-import React from "react";
+import React, { useState, useMemo } from "react";
 import { Link, useLocation } from "wouter";
-import { 
-  useListInterviews, 
-  useGetInterviewStats, 
-  getListInterviewsQueryKey 
+import {
+  useListInterviews,
+  useGetInterviewStats,
+  getListInterviewsQueryKey
 } from "@workspace/api-client-react";
 import { format } from "date-fns";
-import { 
-  Plus, 
-  Users, 
-  CheckCircle2, 
-  Clock, 
-  BarChart, 
+import {
+  Plus,
+  Users,
+  CheckCircle2,
+  Clock,
+  BarChart,
   ChevronRight,
-  Loader2
+  Loader2,
+  ThumbsUp,
+  ThumbsDown,
+  Bot,
+  Globe,
+  Cpu,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -29,11 +34,33 @@ import {
 } from "@/components/ui/table";
 import { AppLayout } from "@/components/layout";
 
+type FilterOption = "all" | "web" | "bot" | "pending" | "completed";
+
 export default function Dashboard() {
   const [, navigate] = useLocation();
-  
+  const [filter, setFilter] = useState<FilterOption>("all");
+
   const { data: stats, isLoading: statsLoading } = useGetInterviewStats();
   const { data: interviews, isLoading: interviewsLoading } = useListInterviews();
+
+  const filteredInterviews = useMemo(() => {
+    if (!interviews) return [];
+    switch (filter) {
+      case "web": return interviews.filter((i) => i.source === "web" || i.source == null);
+      case "bot": return interviews.filter((i) => i.source === "bot");
+      case "pending": return interviews.filter((i) => i.status === "pending" || i.status === "evaluating");
+      case "completed": return interviews.filter((i) => i.status === "completed");
+      default: return interviews;
+    }
+  }, [interviews, filter]);
+
+  const filterButtons: { key: FilterOption; label: string }[] = [
+    { key: "all", label: "All" },
+    { key: "web", label: "Web" },
+    { key: "bot", label: "Teams Bot" },
+    { key: "pending", label: "Pending" },
+    { key: "completed", label: "Completed" },
+  ];
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -53,6 +80,39 @@ export default function Dashboard() {
     if (score >= 8) return "text-green-600 font-medium";
     if (score >= 6) return "text-yellow-600 font-medium";
     return "text-red-600 font-medium";
+  };
+
+  const getSourceBadge = (source: string | null) => {
+    if (source === "bot") {
+      return (
+        <Badge variant="outline" className="gap-1 text-xs text-blue-700 border-blue-200 bg-blue-50 font-medium">
+          <Bot className="h-3 w-3" /> Teams Bot
+        </Badge>
+      );
+    }
+    return (
+      <Badge variant="outline" className="gap-1 text-xs text-slate-600 border-slate-200 bg-slate-50 font-medium">
+        <Globe className="h-3 w-3" /> Web
+      </Badge>
+    );
+  };
+
+  const getLlmBadge = (llmUsed: string | null) => {
+    if (llmUsed === "llama3+gpt") {
+      return (
+        <Badge variant="outline" className="gap-1 text-xs text-purple-700 border-purple-200 bg-purple-50 font-medium">
+          <Cpu className="h-3 w-3" /> LLaMA 3 + GPT
+        </Badge>
+      );
+    }
+    if (llmUsed === "gpt") {
+      return (
+        <Badge variant="outline" className="gap-1 text-xs text-emerald-700 border-emerald-200 bg-emerald-50 font-medium">
+          <Cpu className="h-3 w-3" /> GPT
+        </Badge>
+      );
+    }
+    return <span className="text-muted-foreground text-sm">—</span>;
   };
 
   return (
@@ -82,28 +142,7 @@ export default function Dashboard() {
               )}
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Completed</CardTitle>
-              <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              {statsLoading ? <Skeleton className="h-7 w-16" /> : (
-                <div className="text-2xl font-bold" data-testid="stat-completed">{stats?.completed || 0}</div>
-              )}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Pending</CardTitle>
-              <Clock className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              {statsLoading ? <Skeleton className="h-7 w-16" /> : (
-                <div className="text-2xl font-bold" data-testid="stat-pending">{stats?.pending || 0}</div>
-              )}
-            </CardContent>
-          </Card>
+
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Average Score</CardTitle>
@@ -118,43 +157,95 @@ export default function Dashboard() {
               )}
             </CardContent>
           </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">Strong Hires</CardTitle>
+              <ThumbsUp className="h-4 w-4 text-green-600" />
+            </CardHeader>
+            <CardContent>
+              {statsLoading ? <Skeleton className="h-7 w-16" /> : (
+                <div className="text-2xl font-bold text-green-600" data-testid="stat-strong-hires">
+                  {stats?.verdictBreakdown?.strongHire || 0}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">No Hires</CardTitle>
+              <ThumbsDown className="h-4 w-4 text-red-500" />
+            </CardHeader>
+            <CardContent>
+              {statsLoading ? <Skeleton className="h-7 w-16" /> : (
+                <div className="text-2xl font-bold text-red-500" data-testid="stat-no-hires">
+                  {stats?.verdictBreakdown?.noHire || 0}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
         {/* Interviews Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Recent Interviews</CardTitle>
-            <CardDescription>A list of all interview sessions and their current status.</CardDescription>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <CardTitle>Recent Interviews</CardTitle>
+                <CardDescription className="mt-1">A list of all interview sessions and their current status.</CardDescription>
+              </div>
+              <div className="flex items-center gap-1 flex-wrap">
+                {filterButtons.map((btn) => (
+                  <Button
+                    key={btn.key}
+                    variant={filter === btn.key ? "default" : "outline"}
+                    size="sm"
+                    className={`text-xs ${filter === btn.key ? "bg-accent text-white hover:bg-accent/90" : ""}`}
+                    onClick={() => setFilter(btn.key)}
+                  >
+                    {btn.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {interviewsLoading ? (
               <div className="flex justify-center p-8">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
               </div>
-            ) : !interviews || interviews.length === 0 ? (
+            ) : !filteredInterviews || filteredInterviews.length === 0 ? (
               <div className="text-center p-8 text-muted-foreground border rounded-md bg-muted/20">
-                <p>No interviews found. Create one to get started.</p>
-                <Button variant="outline" className="mt-4" onClick={() => navigate("/create")}>
-                  Create First Interview
-                </Button>
+                {filter === "all"
+                  ? <p>No interviews found. Create one to get started.</p>
+                  : <p>No interviews match this filter.</p>
+                }
+                {filter === "all" && (
+                  <Button variant="outline" className="mt-4" onClick={() => navigate("/create")}>
+                    Create First Interview
+                  </Button>
+                )}
               </div>
             ) : (
-              <div className="rounded-md border">
+              <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>Candidate</TableHead>
                       <TableHead>Role</TableHead>
                       <TableHead>Date</TableHead>
+                      <TableHead>Source</TableHead>
+                      <TableHead>LLM Used</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Score</TableHead>
                       <TableHead className="w-[50px]"></TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {interviews.map((interview) => (
-                      <TableRow 
-                        key={interview.id} 
+                    {filteredInterviews.map((interview) => (
+                      <TableRow
+                        key={interview.id}
                         className="cursor-pointer hover:bg-muted/50 transition-colors"
                         onClick={() => navigate(interview.status === 'completed' ? `/scorecard/${interview.id}` : `/interview/${interview.id}`)}
                         data-testid={`row-interview-${interview.id}`}
@@ -164,6 +255,8 @@ export default function Dashboard() {
                         <TableCell className="text-muted-foreground">
                           {format(new Date(interview.createdAt), "MMM d, yyyy")}
                         </TableCell>
+                        <TableCell>{getSourceBadge(interview.source)}</TableCell>
+                        <TableCell>{getLlmBadge(interview.llmUsed)}</TableCell>
                         <TableCell>{getStatusBadge(interview.status)}</TableCell>
                         <TableCell className="text-right">
                           <span className={getScoreColorClass(interview.overallScore)}>

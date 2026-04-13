@@ -17,12 +17,16 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  BotHealthStatus,
+  BotSubmitInterviewBody,
+  BotSubmitInterviewResponse,
   CreateInterviewBody,
   ErrorResponse,
   HealthStatus,
   Interview,
   InterviewStats,
   InterviewWithQuestions,
+  ListInterviewsParams,
   Scorecard,
   ScorecardWithDetails,
   SubmitInterviewBody,
@@ -38,7 +42,6 @@ type Awaited<O> = O extends AwaitedInput<infer T> ? T : never;
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
 
 /**
- * Returns server health status
  * @summary Health check
  */
 export const getHealthCheckUrl = () => {
@@ -114,44 +117,59 @@ export function useHealthCheck<
 }
 
 /**
- * Returns all interviews with their status and scores
  * @summary List all interviews
  */
-export const getListInterviewsUrl = () => {
-  return `/api/interviews`;
+export const getListInterviewsUrl = (params?: ListInterviewsParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/interviews?${stringifiedParams}`
+    : `/api/interviews`;
 };
 
 export const listInterviews = async (
+  params?: ListInterviewsParams,
   options?: RequestInit,
 ): Promise<Interview[]> => {
-  return customFetch<Interview[]>(getListInterviewsUrl(), {
+  return customFetch<Interview[]>(getListInterviewsUrl(params), {
     ...options,
     method: "GET",
   });
 };
 
-export const getListInterviewsQueryKey = () => {
-  return [`/api/interviews`] as const;
+export const getListInterviewsQueryKey = (params?: ListInterviewsParams) => {
+  return [`/api/interviews`, ...(params ? [params] : [])] as const;
 };
 
 export const getListInterviewsQueryOptions = <
   TData = Awaited<ReturnType<typeof listInterviews>>,
   TError = ErrorType<unknown>,
->(options?: {
-  query?: UseQueryOptions<
-    Awaited<ReturnType<typeof listInterviews>>,
-    TError,
-    TData
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}) => {
+>(
+  params?: ListInterviewsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listInterviews>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
-  const queryKey = queryOptions?.queryKey ?? getListInterviewsQueryKey();
+  const queryKey = queryOptions?.queryKey ?? getListInterviewsQueryKey(params);
 
   const queryFn: QueryFunction<Awaited<ReturnType<typeof listInterviews>>> = ({
     signal,
-  }) => listInterviews({ signal, ...requestOptions });
+  }) => listInterviews(params, { signal, ...requestOptions });
 
   return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
     Awaited<ReturnType<typeof listInterviews>>,
@@ -172,15 +190,18 @@ export type ListInterviewsQueryError = ErrorType<unknown>;
 export function useListInterviews<
   TData = Awaited<ReturnType<typeof listInterviews>>,
   TError = ErrorType<unknown>,
->(options?: {
-  query?: UseQueryOptions<
-    Awaited<ReturnType<typeof listInterviews>>,
-    TError,
-    TData
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-  const queryOptions = getListInterviewsQueryOptions(options);
+>(
+  params?: ListInterviewsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listInterviews>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListInterviewsQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;
@@ -190,7 +211,6 @@ export function useListInterviews<
 }
 
 /**
- * Creates a new interview from a job description and generates questions via AI
  * @summary Create interview and generate questions
  */
 export const getCreateInterviewUrl = () => {
@@ -277,7 +297,81 @@ export const useCreateInterview = <
 };
 
 /**
- * Returns interview details with questions
+ * @summary Get interview statistics
+ */
+export const getGetInterviewStatsUrl = () => {
+  return `/api/interviews/stats`;
+};
+
+export const getInterviewStats = async (
+  options?: RequestInit,
+): Promise<InterviewStats> => {
+  return customFetch<InterviewStats>(getGetInterviewStatsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetInterviewStatsQueryKey = () => {
+  return [`/api/interviews/stats`] as const;
+};
+
+export const getGetInterviewStatsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getInterviewStats>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getInterviewStats>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetInterviewStatsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getInterviewStats>>
+  > = ({ signal }) => getInterviewStats({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getInterviewStats>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetInterviewStatsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getInterviewStats>>
+>;
+export type GetInterviewStatsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get interview statistics
+ */
+
+export function useGetInterviewStats<
+  TData = Awaited<ReturnType<typeof getInterviewStats>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getInterviewStats>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetInterviewStatsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * @summary Get a single interview
  */
 export const getGetInterviewUrl = (id: number) => {
@@ -365,7 +459,6 @@ export function useGetInterview<
 }
 
 /**
- * Submits candidate answers and triggers AI evaluation
  * @summary Submit candidate answers and trigger evaluation
  */
 export const getSubmitInterviewUrl = (id: number) => {
@@ -453,7 +546,6 @@ export const useSubmitInterview = <
 };
 
 /**
- * Returns the AI-generated scorecard for a completed interview
  * @summary Get scorecard for an interview
  */
 export const getGetScorecardUrl = (id: number) => {
@@ -541,32 +633,31 @@ export function useGetScorecard<
 }
 
 /**
- * Returns aggregated stats for the dashboard
- * @summary Get interview statistics
+ * @summary Bot health check
  */
-export const getGetInterviewStatsUrl = () => {
-  return `/api/interviews/stats`;
+export const getGetBotHealthUrl = () => {
+  return `/api/bot/health`;
 };
 
-export const getInterviewStats = async (
+export const getBotHealth = async (
   options?: RequestInit,
-): Promise<InterviewStats> => {
-  return customFetch<InterviewStats>(getGetInterviewStatsUrl(), {
+): Promise<BotHealthStatus> => {
+  return customFetch<BotHealthStatus>(getGetBotHealthUrl(), {
     ...options,
     method: "GET",
   });
 };
 
-export const getGetInterviewStatsQueryKey = () => {
-  return [`/api/interviews/stats`] as const;
+export const getGetBotHealthQueryKey = () => {
+  return [`/api/bot/health`] as const;
 };
 
-export const getGetInterviewStatsQueryOptions = <
-  TData = Awaited<ReturnType<typeof getInterviewStats>>,
+export const getGetBotHealthQueryOptions = <
+  TData = Awaited<ReturnType<typeof getBotHealth>>,
   TError = ErrorType<unknown>,
 >(options?: {
   query?: UseQueryOptions<
-    Awaited<ReturnType<typeof getInterviewStats>>,
+    Awaited<ReturnType<typeof getBotHealth>>,
     TError,
     TData
   >;
@@ -574,40 +665,40 @@ export const getGetInterviewStatsQueryOptions = <
 }) => {
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
-  const queryKey = queryOptions?.queryKey ?? getGetInterviewStatsQueryKey();
+  const queryKey = queryOptions?.queryKey ?? getGetBotHealthQueryKey();
 
-  const queryFn: QueryFunction<
-    Awaited<ReturnType<typeof getInterviewStats>>
-  > = ({ signal }) => getInterviewStats({ signal, ...requestOptions });
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getBotHealth>>> = ({
+    signal,
+  }) => getBotHealth({ signal, ...requestOptions });
 
   return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
-    Awaited<ReturnType<typeof getInterviewStats>>,
+    Awaited<ReturnType<typeof getBotHealth>>,
     TError,
     TData
   > & { queryKey: QueryKey };
 };
 
-export type GetInterviewStatsQueryResult = NonNullable<
-  Awaited<ReturnType<typeof getInterviewStats>>
+export type GetBotHealthQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getBotHealth>>
 >;
-export type GetInterviewStatsQueryError = ErrorType<unknown>;
+export type GetBotHealthQueryError = ErrorType<unknown>;
 
 /**
- * @summary Get interview statistics
+ * @summary Bot health check
  */
 
-export function useGetInterviewStats<
-  TData = Awaited<ReturnType<typeof getInterviewStats>>,
+export function useGetBotHealth<
+  TData = Awaited<ReturnType<typeof getBotHealth>>,
   TError = ErrorType<unknown>,
 >(options?: {
   query?: UseQueryOptions<
-    Awaited<ReturnType<typeof getInterviewStats>>,
+    Awaited<ReturnType<typeof getBotHealth>>,
     TError,
     TData
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-  const queryOptions = getGetInterviewStatsQueryOptions(options);
+  const queryOptions = getGetBotHealthQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;
@@ -615,3 +706,89 @@ export function useGetInterviewStats<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary Teams bot submit interview
+ */
+export const getBotSubmitInterviewUrl = () => {
+  return `/api/bot/submit-interview`;
+};
+
+export const botSubmitInterview = async (
+  botSubmitInterviewBody: BotSubmitInterviewBody,
+  options?: RequestInit,
+): Promise<BotSubmitInterviewResponse> => {
+  return customFetch<BotSubmitInterviewResponse>(getBotSubmitInterviewUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(botSubmitInterviewBody),
+  });
+};
+
+export const getBotSubmitInterviewMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof botSubmitInterview>>,
+    TError,
+    { data: BodyType<BotSubmitInterviewBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof botSubmitInterview>>,
+  TError,
+  { data: BodyType<BotSubmitInterviewBody> },
+  TContext
+> => {
+  const mutationKey = ["botSubmitInterview"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof botSubmitInterview>>,
+    { data: BodyType<BotSubmitInterviewBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return botSubmitInterview(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type BotSubmitInterviewMutationResult = NonNullable<
+  Awaited<ReturnType<typeof botSubmitInterview>>
+>;
+export type BotSubmitInterviewMutationBody = BodyType<BotSubmitInterviewBody>;
+export type BotSubmitInterviewMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Teams bot submit interview
+ */
+export const useBotSubmitInterview = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof botSubmitInterview>>,
+    TError,
+    { data: BodyType<BotSubmitInterviewBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof botSubmitInterview>>,
+  TError,
+  { data: BodyType<BotSubmitInterviewBody> },
+  TContext
+> => {
+  return useMutation(getBotSubmitInterviewMutationOptions(options));
+};

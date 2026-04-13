@@ -6,7 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type SubmitInterviewBodyAnswersItem = {
-  questionIndex: number;
-  answerText: string;
-};
+export interface BotHealthStatus {
+  status: string;
+  ollamaAvailable: boolean;
+  gptAvailable: boolean;
+  timestamp: string;
+}

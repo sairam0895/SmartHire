@@ -24,4 +24,8 @@ export interface Interview {
   completedAt: string | null;
   /** @nullable */
   duration: number | null;
+  /** @nullable */
+  llmUsed: string | null;
+  /** @nullable */
+  source: string | null;
 }

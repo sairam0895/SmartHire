@@ -5,8 +5,9 @@
  * SmartHire API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { AnswerInput } from "./answerInput";
 
-export interface SubmitInterviewBody {
-  answers: AnswerInput[];
+export interface BotSubmitInterviewResponse {
+  interviewId: number;
+  scorecardId: number;
+  scorecardUrl: string;
 }

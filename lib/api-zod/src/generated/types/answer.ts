@@ -15,4 +15,12 @@ export interface Answer {
   score: number | null;
   /** @nullable */
   feedback: string | null;
+  /** @nullable */
+  confidenceScore: number | null;
+  /** @nullable */
+  fillerWordCount: number | null;
+  /** @nullable */
+  pauseCount: number | null;
+  /** @nullable */
+  speechDurationSeconds: number | null;
 }

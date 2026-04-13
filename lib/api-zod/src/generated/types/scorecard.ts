@@ -13,6 +13,8 @@ export interface Scorecard {
   communicationScore: number;
   problemSolvingScore: number;
   roleRelevanceScore: number;
+  /** @nullable */
+  speechConfidenceScore: number | null;
   overallScore: number;
   verdict: string;
   strengths: string[];

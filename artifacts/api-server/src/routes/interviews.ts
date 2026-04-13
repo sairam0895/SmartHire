@@ -1,14 +1,14 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, avg, count, sql } from "drizzle-orm";
+import { eq, desc, avg, count } from "drizzle-orm";
 import { db, interviewsTable, questionsTable, answersTable, scorecardsTable } from "@workspace/db";
 import {
   CreateInterviewBody,
   GetInterviewParams,
   SubmitInterviewParams,
-  SubmitInterviewBody,
   GetScorecardParams,
 } from "@workspace/api-zod";
 import { generateInterviewQuestions, evaluateInterview } from "../lib/ai";
+import { z } from "zod";
 
 const router: IRouter = Router();
 
@@ -92,6 +92,7 @@ router.post("/interviews", async (req, res): Promise<void> => {
       jobTitle,
       jobDescription,
       status: "pending",
+      source: "web",
     })
     .returning();
 
@@ -100,24 +101,29 @@ router.post("/interviews", async (req, res): Promise<void> => {
     return;
   }
 
-  let generatedQuestions: Awaited<ReturnType<typeof generateInterviewQuestions>>;
+  let generateResult: Awaited<ReturnType<typeof generateInterviewQuestions>>;
   try {
-    generatedQuestions = await generateInterviewQuestions(jobDescription, jobTitle);
+    generateResult = await generateInterviewQuestions(jobDescription, jobTitle);
   } catch (err) {
     req.log.error({ err }, "Failed to generate interview questions");
     res.status(500).json({ error: "Failed to generate interview questions. Please try again." });
     return;
   }
 
-  if (generatedQuestions.length === 0) {
+  if (generateResult.questions.length === 0) {
     res.status(500).json({ error: "AI did not return questions. Please try again." });
     return;
   }
 
+  await db
+    .update(interviewsTable)
+    .set({ llmUsed: generateResult.llmUsed })
+    .where(eq(interviewsTable.id, interview.id));
+
   const questionRows = await db
     .insert(questionsTable)
     .values(
-      generatedQuestions.map((q, i) => ({
+      generateResult.questions.map((q, i) => ({
         interviewId: interview.id,
         questionIndex: i,
         questionText: q.questionText,
@@ -128,6 +134,8 @@ router.post("/interviews", async (req, res): Promise<void> => {
 
   res.status(201).json({
     ...interview,
+    llmUsed: generateResult.llmUsed,
+    source: "web",
     createdAt: interview.createdAt.toISOString(),
     completedAt: null,
     questions: questionRows,
@@ -165,6 +173,19 @@ router.get("/interviews/:id", async (req, res): Promise<void> => {
   });
 });
 
+const SubmitAnswerInputExtended = z.object({
+  questionIndex: z.number().int(),
+  answerText: z.string(),
+  confidenceScore: z.number().nullable().optional(),
+  fillerWordCount: z.number().int().nullable().optional(),
+  pauseCount: z.number().int().nullable().optional(),
+  speechDurationSeconds: z.number().int().nullable().optional(),
+});
+
+const SubmitBodyExtended = z.object({
+  answers: z.array(SubmitAnswerInputExtended),
+});
+
 router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
   const params = SubmitInterviewParams.safeParse(req.params);
   if (!params.success) {
@@ -172,7 +193,7 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     return;
   }
 
-  const bodyParsed = SubmitInterviewBody.safeParse(req.body);
+  const bodyParsed = SubmitBodyExtended.safeParse(req.body);
   if (!bodyParsed.success) {
     res.status(400).json({ error: bodyParsed.error.message });
     return;
@@ -204,13 +225,19 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
   const durationSeconds = Math.floor((endTime - startTime) / 1000);
 
   const { answers } = bodyParsed.data;
-  
+
   const questionsAndAnswers = answers.map((a) => {
     const question = questions.find((q) => q.questionIndex === a.questionIndex);
     return {
       question: question?.questionText ?? `Question ${a.questionIndex + 1}`,
       answer: a.answerText,
       index: a.questionIndex,
+      speech: {
+        confidenceScore: a.confidenceScore ?? null,
+        fillerWordCount: a.fillerWordCount ?? null,
+        pauseCount: a.pauseCount ?? null,
+        speechDurationSeconds: a.speechDurationSeconds ?? null,
+      },
     };
   });
 
@@ -227,7 +254,6 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     return;
   }
 
-  // Save answers
   const questionIdMap: Record<number, number> = {};
   for (const q of questions) {
     questionIdMap[q.questionIndex] = q.id;
@@ -241,10 +267,13 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
       answerText: a.answerText,
       score: evaluation.perAnswer.find((pa) => pa.questionIndex === a.questionIndex)?.score ?? null,
       feedback: evaluation.perAnswer.find((pa) => pa.questionIndex === a.questionIndex)?.note ?? null,
+      confidenceScore: a.confidenceScore ?? null,
+      fillerWordCount: a.fillerWordCount ?? null,
+      pauseCount: a.pauseCount ?? null,
+      speechDurationSeconds: a.speechDurationSeconds ?? null,
     }))
   );
 
-  // Save scorecard
   const [scorecard] = await db
     .insert(scorecardsTable)
     .values({
@@ -253,6 +282,7 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
       communicationScore: evaluation.scores.communication,
       problemSolvingScore: evaluation.scores.problemSolving,
       roleRelevanceScore: evaluation.scores.roleRelevance,
+      speechConfidenceScore: evaluation.scores.speechConfidence ?? null,
       overallScore: evaluation.overall,
       verdict: evaluation.verdict,
       strengths: evaluation.strengths,
@@ -262,7 +292,6 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     })
     .returning();
 
-  // Update interview status
   await db
     .update(interviewsTable)
     .set({
