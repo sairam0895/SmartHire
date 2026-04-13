@@ -47,3 +47,13 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Environment files - never commit
+
+artifacts/api-server/.env
+
+artifacts/smarthire/.env
+
+lib/db/.env
+
+*.env

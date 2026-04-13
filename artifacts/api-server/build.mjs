@@ -101,6 +101,18 @@ async function buildAll() {
       "puppeteer-core",
       "electron",
       "pdfkit",
+      "botbuilder",
+      "restify",
+      "openai",
+      "zod",
+      "pg",
+      "p-limit",
+      "p-retry",
+      "drizzle-orm",
+      "drizzle-orm/node-postgres",
+      "drizzle-orm/pg-core",
+      "drizzle-zod",
+      "restify",
       "fontkit",
       "@swc/helpers",
     ],
@@ -127,3 +139,5 @@ buildAll().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
+

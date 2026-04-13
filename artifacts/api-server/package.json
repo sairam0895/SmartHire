@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
+    "dev": "cross-env NODE_ENV=development pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -13,14 +13,22 @@
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "@workspace/integrations-openai-ai-server": "workspace:*",
+    "botbuilder": "^4.23.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2",
+    "dotenv": "^17.4.1",
     "drizzle-orm": "catalog:",
+    "drizzle-zod": "^0.8.3",
     "express": "^5",
+    "openai": "^6.34.0",
+    "p-limit": "^7.3.0",
+    "p-retry": "^7.1.1",
     "pdfkit": "^0.15.0",
-    "zod": "catalog:",
+    "pg": "^8.20.0",
     "pino": "^9",
-    "pino-http": "^10"
+    "pino-http": "^10",
+    "restify": "^11.1.0",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",
