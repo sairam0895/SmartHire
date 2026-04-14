@@ -26,4 +26,6 @@ app.listen(port, (err) => {
   logger.info({ port }, "Server listening");
 });
 
-startBotServer();
+startBotServer().catch((err) => {
+  logger.error({ err }, "Bot server failed to start");
+});
