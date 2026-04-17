@@ -44,6 +44,12 @@ export interface Interview {
   llmUsed: string | null;
   /** @nullable */
   source: string | null;
+  /** @nullable */
+  scheduledAt?: string | null;
+  /** @nullable */
+  durationMinutes?: number | null;
+  /** @nullable */
+  timezone?: string | null;
 }
 
 export type QuestionQuestionType =

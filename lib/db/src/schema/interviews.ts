@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer, real } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, real, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -17,6 +17,11 @@ export const interviewsTable = pgTable("interviews", {
   duration: integer("duration"),
   llmUsed: text("llm_used"),
   source: text("source").default("web"),
+  scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
+  durationMinutes: integer("duration_minutes"),
+  timezone: varchar("timezone", { length: 100 }),
+  recordingKey: varchar("recording_key", { length: 500 }),
+  recordingDurationSeconds: integer("recording_duration_seconds"),
 });
 
 export const insertInterviewSchema = createInsertSchema(interviewsTable).omit({

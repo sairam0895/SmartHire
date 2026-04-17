@@ -46,7 +46,7 @@ export async function generateInterviewQuestions(
     messages: [
       {
         role: "system",
-        content: `You are SmartHire, an expert technical interviewer. Given a Job Description, generate exactly 7 interview questions for the role of ${jobTitle}. Mix: 3 technical, 2 behavioral, 2 situational. Return ONLY a JSON array with this exact shape, no markdown, no explanation: [{"questionText": "question here", "questionType": "technical"}]`,
+        content: `You are AccionHire, an expert technical interviewer. Given a Job Description, generate exactly 7 interview questions for the role of ${jobTitle}. Mix: 3 technical, 2 behavioral, 2 situational. Return ONLY a JSON array with this exact shape, no markdown, no explanation: [{"questionText": "question here", "questionType": "technical"}]`,
       },
       {
         role: "user",
@@ -112,7 +112,7 @@ export async function evaluateInterview(
       messages: [
         {
           role: "system",
-          content: `You are SmartHire Evaluation Engine. Evaluate candidate answers for the role of ${jobTitle}. ${speechNote}
+          content: `You are AccionHire Evaluation Engine. Evaluate candidate answers for the role of ${jobTitle}. ${speechNote}
 Return ONLY valid JSON, no markdown, no explanation:
 {
   "scores": { "technical": 7, "communication": 6, "problemSolving": 7, "roleRelevance": 8, "speechConfidence": null },
@@ -159,6 +159,141 @@ Return ONLY valid JSON, no markdown, no explanation:
     })),
   };
 }
+
+// ─── Interview Conversation Engine ──────────────────────────────────────────
+
+export interface ConversationMessage {
+  role: "ai" | "candidate";
+  text: string;
+}
+
+export interface ConversationResult {
+  nextQuestion: string;
+  isComplete: boolean;
+  topicArea: "introduction" | "technical" | "problemSolving" | "behavioral" | "situational" | "wrapup";
+}
+
+export async function generateInterviewConversation(
+  jobTitle: string,
+  jobDescription: string,
+  conversationHistory: ConversationMessage[],
+  elapsedSeconds: number,
+  durationMinutes: number = 30
+): Promise<ConversationResult> {
+  const isTestMode = durationMinutes <= 2;
+  const wrapUpAt = isTestMode
+    ? durationMinutes * 60 * 0.6  // wrap up at 60% for test
+    : durationMinutes * 60 * 0.85; // wrap up at 85% for real
+
+  const maxQuestions = isTestMode ? 2 : 99;
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  const wrapUpThresholdSeconds = Math.floor(wrapUpAt);
+  const shouldWrapUp = elapsedSeconds >= wrapUpThresholdSeconds;
+
+  // Count candidate turns to enforce maxQuestions in test mode
+  const candidateTurns = conversationHistory.filter((m) => m.role === "candidate").length;
+  const testModeDone = isTestMode && candidateTurns >= maxQuestions;
+
+  const historyText = conversationHistory
+    .map((m) => `[${m.role === "ai" ? "Interviewer" : "Candidate"}]: ${m.text}`)
+    .join("\n\n");
+
+  if (testModeDone || (isTestMode && shouldWrapUp)) {
+    return {
+      nextQuestion:
+        "Thank you for your time! This was a quick test interview. Our team will review your responses and get back to you soon. Best of luck!",
+      isComplete: true,
+      topicArea: "wrapup",
+    };
+  }
+
+  const systemPrompt = isTestMode
+    ? `You are AccionHire, conducting a very short 2-minute TEST interview. Ask only 2 short, simple questions total (one at a time). Keep each question brief (one sentence). Skip behavioral and situational phases — ask only basic technical intro questions. After ${maxQuestions} questions, wrap up and set isComplete to true.
+
+Return ONLY valid JSON with no markdown or explanation:
+{
+  "nextQuestion": "your next question here",
+  "isComplete": false,
+  "topicArea": "introduction"
+}
+
+Valid topicArea values: "introduction", "technical", "wrapup"`
+    : `You are AccionHire, a senior technical interviewer conducting a ${durationMinutes}-minute L1 screening interview. You have the job description and the full conversation history so far.
+
+Your responsibilities:
+1. Ask intelligent, contextual follow-up questions based on what the candidate said
+2. Naturally cover all topic areas: introduction, technical depth, problem solving, behavioral, situational
+3. Sound warm, professional, and encouraging — like a real senior engineer interviewer would
+4. Wrap up warmly after ${Math.floor(durationMinutes * 0.85)} minutes and set isComplete to true
+5. Never ask the same question twice
+6. Base technical questions on the specific technologies and requirements in the JD
+
+Return ONLY valid JSON with no markdown or explanation:
+{
+  "nextQuestion": "your next question here",
+  "isComplete": false,
+  "topicArea": "introduction"
+}
+
+Valid topicArea values: "introduction", "technical", "problemSolving", "behavioral", "situational", "wrapup"`;
+
+  const userPrompt = isTestMode
+    ? `Job Title: ${jobTitle}
+
+Conversation so far:
+${historyText || "(No conversation yet — this is the start)"}
+
+Questions asked so far: ${candidateTurns} of ${maxQuestions}. ${
+        shouldWrapUp || candidateTurns >= maxQuestions
+          ? "You have reached the question limit. Wrap up and set isComplete to true."
+          : "Ask the next short, simple question."
+      }`
+    : `Job Title: ${jobTitle}
+Job Description:
+${jobDescription}
+
+Conversation so far:
+${historyText || "(No conversation yet — this is the start)"}
+
+Elapsed interview time: ${elapsedMinutes} minute${elapsedMinutes !== 1 ? "s" : ""} ${elapsedSeconds % 60} seconds.
+
+${
+      shouldWrapUp
+        ? `The interview has reached ${Math.floor(durationMinutes * 0.85)} minutes (${Math.round(durationMinutes * 0.85 * 60)} seconds). Please conclude the interview with a warm, professional goodbye and set isComplete to true.`
+        : "What is the best next question to ask based on the candidate's responses and the JD? Cover areas not yet discussed."
+    }`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      max_tokens: 400,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+
+    const content = response.choices[0]?.message?.content ?? "{}";
+    const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON found in response");
+
+    return JSON.parse(jsonMatch[0]) as ConversationResult;
+  } catch (err) {
+    console.error("Interview conversation generation failed:", err);
+  }
+
+  return {
+    nextQuestion: shouldWrapUp || testModeDone
+      ? "Thank you so much for your time today. It has been a genuine pleasure speaking with you. Our team will carefully review your interview and get back to you with feedback soon. Best of luck!"
+      : "Could you walk me through a challenging technical problem you encountered recently and how you solved it?",
+    isComplete: shouldWrapUp || testModeDone,
+    topicArea: shouldWrapUp || testModeDone ? "wrapup" : "technical",
+  };
+}
+
+// ─── LLM Health Checks ───────────────────────────────────────────────────────
 
 export async function checkOllamaAvailable(): Promise<boolean> {
   const controller = new AbortController();

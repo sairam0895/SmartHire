@@ -87,4 +87,56 @@ router.get("/livekit/interview/:id", async (req, res): Promise<void> => {
   }
 });
 
+// Generate follow-up question based on answer
+router.post("/livekit/followup", async (req, res): Promise<void> => {
+  const { question, answer, jobTitle, jobDescription } = req.body;
+
+  if (!question || !answer) {
+    res.status(400).json({ needsFollowUp: false, followUpQuestion: null });
+    return;
+  }
+
+  try {
+    const { openai } = await import("@workspace/integrations-openai-ai-server");
+
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      max_tokens: 200,
+      messages: [
+        {
+          role: "system",
+          content: `You are Aria, a professional AI interviewer conducting an L1 screening for ${jobTitle}.
+Decide if the candidate's answer needs a follow-up question.
+Return ONLY JSON: { "needsFollowUp": true/false, "followUpQuestion": "question or null", "acknowledgment": "1-2 sentence warm acknowledgment of their answer" }
+Follow up if: answer is too vague, too short (under 30 words), or misses key aspects.
+Do NOT follow up if: answer is complete, detailed, and addresses the question well.
+Keep acknowledgment warm and professional. Never say "Great answer!" — be natural.`,
+        },
+        {
+          role: "user",
+          content: `Job: ${jobTitle}
+Question: ${question}
+Candidate Answer: ${answer}
+
+Should I ask a follow-up?`,
+        },
+      ],
+    });
+
+    const content = response.choices[0]?.message?.content ?? "{}";
+    const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      res.json({ needsFollowUp: false, followUpQuestion: null, acknowledgment: "Thank you for that." });
+      return;
+    }
+
+    const result = JSON.parse(jsonMatch[0]);
+    res.json(result);
+  } catch (err) {
+    console.error("Follow-up generation failed:", err);
+    res.json({ needsFollowUp: false, followUpQuestion: null, acknowledgment: "Thank you for sharing that." });
+  }
+});
+
 export default router;

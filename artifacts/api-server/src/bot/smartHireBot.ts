@@ -57,7 +57,7 @@ export class SmartHireBot extends ActivityHandler {
           });
 
           await context.sendActivity(
-            `👋 Hello! I'm **SmartHire**, your AI interviewer.\n\n` +
+            `👋 Hello! I'm **AccionHire**, your AI interviewer.\n\n` +
             `I'll be conducting your L1 screening interview today.\n` +
             `I will ask you **7 questions** — please answer each one clearly.\n\n` +
             `Type **ready** when you want to begin.`
@@ -165,7 +165,7 @@ export class SmartHireBot extends ActivityHandler {
     try {
       // Submit to API — saves to DB AND evaluates
       const apiUrl = `http://localhost:8080/api/bot/submit-interview`;
-      const apiKey = process.env.BOT_API_KEY ?? "smarthire-bot-key";
+      const apiKey = process.env.BOT_API_KEY ?? "accionhire-bot-key";
 
       const payload = {
         candidateName: session.candidateName,

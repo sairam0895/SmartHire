@@ -37,6 +37,9 @@ export const ListInterviewsResponseItem = zod.object({
   duration: zod.number().nullable(),
   llmUsed: zod.string().nullable(),
   source: zod.string().nullable(),
+  scheduledAt: zod.string().nullable().optional(),
+  durationMinutes: zod.number().nullable().optional(),
+  timezone: zod.string().nullable().optional(),
 });
 export const ListInterviewsResponse = zod.array(ListInterviewsResponseItem);
 
@@ -49,6 +52,9 @@ export const CreateInterviewBody = zod.object({
   candidateEmail: zod.string(),
   jobTitle: zod.string(),
   jobDescription: zod.string(),
+  scheduledAt: zod.string().nullable().optional(),
+  durationMinutes: zod.number().int().nullable().optional(),
+  timezone: zod.string().nullable().optional(),
 });
 
 /**
@@ -89,6 +95,9 @@ export const GetInterviewResponse = zod.object({
   duration: zod.number().nullable(),
   llmUsed: zod.string().nullable(),
   source: zod.string().nullable(),
+  scheduledAt: zod.string().nullable().optional(),
+  durationMinutes: zod.number().nullable().optional(),
+  timezone: zod.string().nullable().optional(),
   questions: zod.array(
     zod.object({
       id: zod.number(),

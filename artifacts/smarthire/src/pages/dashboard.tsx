@@ -5,6 +5,7 @@ import {
   useGetInterviewStats,
   getListInterviewsQueryKey
 } from "@workspace/api-client-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Plus,
@@ -19,6 +20,8 @@ import {
   Bot,
   Globe,
   Cpu,
+  RefreshCw,
+  Calendar,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -34,25 +37,61 @@ import {
 } from "@/components/ui/table";
 import { AppLayout } from "@/components/layout";
 
+const PAGE_SIZE = 10;
+
 type FilterOption = "all" | "web" | "bot" | "pending" | "completed";
 
 export default function Dashboard() {
   const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
   const [filter, setFilter] = useState<FilterOption>("all");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const { data: stats, isLoading: statsLoading } = useGetInterviewStats();
   const { data: interviews, isLoading: interviewsLoading } = useListInterviews();
 
   const filteredInterviews = useMemo(() => {
     if (!interviews) return [];
+    let list = [...interviews];
+
     switch (filter) {
-      case "web": return interviews.filter((i) => i.source === "web" || i.source == null);
-      case "bot": return interviews.filter((i) => i.source === "bot");
-      case "pending": return interviews.filter((i) => i.status === "pending" || i.status === "evaluating");
-      case "completed": return interviews.filter((i) => i.status === "completed");
-      default: return interviews;
+      case "web":       list = list.filter((i) => i.source === "web" || i.source == null); break;
+      case "bot":       list = list.filter((i) => i.source === "bot"); break;
+      case "pending":   list = list.filter((i) => i.status === "pending" || i.status === "evaluating"); break;
+      case "completed": list = list.filter((i) => i.status === "completed"); break;
     }
+
+    // Sort: scheduledAt desc (nulls last), then createdAt desc
+    return list.sort((a, b) => {
+      const aTime = a.scheduledAt ? new Date(a.scheduledAt).getTime() : 0;
+      const bTime = b.scheduledAt ? new Date(b.scheduledAt).getTime() : 0;
+      if (aTime !== bTime) return bTime - aTime;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
   }, [interviews, filter]);
+
+  // Reset to page 1 when filter changes
+  const handleFilterChange = (f: FilterOption) => {
+    setFilter(f);
+    setCurrentPage(1);
+  };
+
+  // Pagination
+  const totalItems = filteredInterviews.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
+  const pagedInterviews = filteredInterviews.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE
+  );
+  const showingFrom = totalItems === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const showingTo = Math.min(currentPage * PAGE_SIZE, totalItems);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await queryClient.invalidateQueries({ queryKey: getListInterviewsQueryKey() });
+    setIsRefreshing(false);
+  };
 
   const filterButtons: { key: FilterOption; label: string }[] = [
     { key: "all", label: "All" },
@@ -62,7 +101,14 @@ export default function Dashboard() {
     { key: "completed", label: "Completed" },
   ];
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, scheduledAt: string | null | undefined) => {
+    if (scheduledAt && status !== "completed") {
+      return (
+        <Badge variant="secondary" className="bg-blue-100 text-blue-800 hover:bg-blue-100 gap-1">
+          <Calendar className="h-3 w-3" /> Scheduled
+        </Badge>
+      );
+    }
     switch (status) {
       case "completed":
         return <Badge variant="secondary" className="bg-green-100 text-green-800 hover:bg-green-100">Completed</Badge>;
@@ -115,6 +161,31 @@ export default function Dashboard() {
     return <span className="text-muted-foreground text-sm">—</span>;
   };
 
+  const handleRowClick = (interview: { id: number; status: string }) => {
+    if (interview.status === "completed") {
+      navigate(`/scorecard/${interview.id}`);
+    } else {
+      navigate(`/voice-interview/${interview.id}`);
+    }
+  };
+
+  // Page number buttons: show max 5 around current
+  const getPageNumbers = () => {
+    const pages: (number | "...")[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (currentPage > 3) pages.push("...");
+      for (let i = Math.max(2, currentPage - 1); i <= Math.min(totalPages - 1, currentPage + 1); i++) {
+        pages.push(i);
+      }
+      if (currentPage < totalPages - 2) pages.push("...");
+      pages.push(totalPages);
+    }
+    return pages;
+  };
+
   return (
     <AppLayout>
       <div className="space-y-8">
@@ -123,10 +194,23 @@ export default function Dashboard() {
             <h1 className="text-3xl font-bold tracking-tight">Recruiter Dashboard</h1>
             <p className="text-muted-foreground mt-1">Manage and track candidate interviews.</p>
           </div>
-          <Button onClick={() => navigate("/create")} className="gap-2 bg-accent hover:bg-accent/90 text-white" data-testid="button-new-interview">
-            <Plus className="h-4 w-4" />
-            New Interview
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="gap-1.5"
+              data-testid="button-refresh"
+            >
+              <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+            <Button onClick={() => navigate("/create")} className="gap-2 bg-accent hover:bg-accent/90 text-white" data-testid="button-new-interview">
+              <Plus className="h-4 w-4" />
+              New Interview
+            </Button>
+          </div>
         </div>
 
         {/* Stats Grid */}
@@ -202,7 +286,7 @@ export default function Dashboard() {
                     variant={filter === btn.key ? "default" : "outline"}
                     size="sm"
                     className={`text-xs ${filter === btn.key ? "bg-accent text-white hover:bg-accent/90" : ""}`}
-                    onClick={() => setFilter(btn.key)}
+                    onClick={() => handleFilterChange(btn.key)}
                   >
                     {btn.label}
                   </Button>
@@ -228,49 +312,110 @@ export default function Dashboard() {
                 )}
               </div>
             ) : (
-              <div className="rounded-md border overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Candidate</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Source</TableHead>
-                      <TableHead>LLM Used</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Score</TableHead>
-                      <TableHead className="w-[50px]"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredInterviews.map((interview) => (
-                      <TableRow
-                        key={interview.id}
-                        className="cursor-pointer hover:bg-muted/50 transition-colors"
-                        onClick={() => navigate(interview.status === 'completed' ? `/scorecard/${interview.id}` : `/interview/${interview.id}`)}
-                        data-testid={`row-interview-${interview.id}`}
-                      >
-                        <TableCell className="font-medium">{interview.candidateName}</TableCell>
-                        <TableCell>{interview.jobTitle}</TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {format(new Date(interview.createdAt), "MMM d, yyyy")}
-                        </TableCell>
-                        <TableCell>{getSourceBadge(interview.source)}</TableCell>
-                        <TableCell>{getLlmBadge(interview.llmUsed)}</TableCell>
-                        <TableCell>{getStatusBadge(interview.status)}</TableCell>
-                        <TableCell className="text-right">
-                          <span className={getScoreColorClass(interview.overallScore)}>
-                            {interview.overallScore ? interview.overallScore.toFixed(1) : '-'}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                        </TableCell>
+              <>
+                <div className="rounded-md border overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Candidate</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead>Scheduled</TableHead>
+                        <TableHead>Created</TableHead>
+                        <TableHead>Source</TableHead>
+                        <TableHead>LLM Used</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Score</TableHead>
+                        <TableHead className="w-[50px]"></TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                    </TableHeader>
+                    <TableBody>
+                      {pagedInterviews.map((interview) => (
+                        <TableRow
+                          key={interview.id}
+                          className="cursor-pointer hover:bg-muted/50 transition-colors"
+                          onClick={() => handleRowClick(interview)}
+                          data-testid={`row-interview-${interview.id}`}
+                        >
+                          <TableCell className="font-medium">{interview.candidateName}</TableCell>
+                          <TableCell>{interview.jobTitle}</TableCell>
+                          <TableCell className="text-muted-foreground whitespace-nowrap">
+                            {interview.scheduledAt ? (
+                              <span className="text-blue-600 font-medium">
+                                {format(new Date(interview.scheduledAt), "MMM d, yyyy h:mm a")}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {format(new Date(interview.createdAt), "MMM d, yyyy")}
+                          </TableCell>
+                          <TableCell>{getSourceBadge(interview.source)}</TableCell>
+                          <TableCell>{getLlmBadge(interview.llmUsed)}</TableCell>
+                          <TableCell>{getStatusBadge(interview.status, interview.scheduledAt)}</TableCell>
+                          <TableCell className="text-right">
+                            <span className={getScoreColorClass(interview.overallScore)}>
+                              {interview.overallScore ? interview.overallScore.toFixed(1) : '-'}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {/* Pagination */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between mt-4 px-1">
+                    <p className="text-sm text-muted-foreground">
+                      Showing {showingFrom}–{showingTo} of {totalItems} interviews
+                    </p>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                        className="text-xs"
+                      >
+                        Previous
+                      </Button>
+                      {getPageNumbers().map((p, idx) =>
+                        p === "..." ? (
+                          <span key={`ellipsis-${idx}`} className="px-2 text-muted-foreground text-sm">…</span>
+                        ) : (
+                          <Button
+                            key={p}
+                            variant={currentPage === p ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => setCurrentPage(p as number)}
+                            className={`text-xs w-8 ${currentPage === p ? "bg-accent hover:bg-accent/90 text-white" : ""}`}
+                          >
+                            {p}
+                          </Button>
+                        )
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                        disabled={currentPage === totalPages}
+                        className="text-xs"
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {totalPages === 1 && totalItems > 0 && (
+                  <p className="text-sm text-muted-foreground mt-4 px-1">
+                    Showing {showingFrom}–{showingTo} of {totalItems} interviews
+                  </p>
+                )}
+              </>
             )}
           </CardContent>
         </Card>

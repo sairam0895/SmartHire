@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, avg, count } from "drizzle-orm";
+import { eq, and, desc, avg, count } from "drizzle-orm";
 import { db, interviewsTable, questionsTable, answersTable, scorecardsTable } from "@workspace/db";
 import {
   CreateInterviewBody,
@@ -7,8 +7,10 @@ import {
   SubmitInterviewParams,
   GetScorecardParams,
 } from "@workspace/api-zod";
-import { generateInterviewQuestions, evaluateInterview } from "../lib/ai";
+import { generateInterviewQuestions, evaluateInterview, generateInterviewConversation } from "../lib/ai";
+import { uploadRecording, getSignedUrl, generateRecordingKey, s3Enabled } from "../lib/s3";
 import { z } from "zod";
+import multer from "multer";
 
 const router: IRouter = Router();
 
@@ -31,19 +33,19 @@ router.get("/interviews/stats", async (req, res): Promise<void> => {
   const strongHireCount = await db
     .select({ count: count() })
     .from(interviewsTable)
-    .where(eq(interviewsTable.verdict, "Strong Hire"));
+    .where(and(eq(interviewsTable.verdict, "Strong Hire"), eq(interviewsTable.status, "completed")));
   const hireCount = await db
     .select({ count: count() })
     .from(interviewsTable)
-    .where(eq(interviewsTable.verdict, "Hire"));
+    .where(and(eq(interviewsTable.verdict, "Hire"), eq(interviewsTable.status, "completed")));
   const maybeCount = await db
     .select({ count: count() })
     .from(interviewsTable)
-    .where(eq(interviewsTable.verdict, "Maybe"));
+    .where(and(eq(interviewsTable.verdict, "Maybe"), eq(interviewsTable.status, "completed")));
   const noHireCount = await db
     .select({ count: count() })
     .from(interviewsTable)
-    .where(eq(interviewsTable.verdict, "No Hire"));
+    .where(and(eq(interviewsTable.verdict, "No Hire"), eq(interviewsTable.status, "completed")));
 
   res.json({
     total: Number(total[0]?.count ?? 0),
@@ -69,6 +71,7 @@ router.get("/interviews", async (req, res): Promise<void> => {
     ...i,
     createdAt: i.createdAt.toISOString(),
     completedAt: i.completedAt ? i.completedAt.toISOString() : null,
+    scheduledAt: i.scheduledAt ? i.scheduledAt.toISOString() : null,
   }));
 
   res.json(mapped);
@@ -81,7 +84,7 @@ router.post("/interviews", async (req, res): Promise<void> => {
     return;
   }
 
-  const { recruiterName, candidateName, candidateEmail, jobTitle, jobDescription } = parsed.data;
+  const { recruiterName, candidateName, candidateEmail, jobTitle, jobDescription, scheduledAt, durationMinutes, timezone } = parsed.data;
 
   const [interview] = await db
     .insert(interviewsTable)
@@ -93,6 +96,9 @@ router.post("/interviews", async (req, res): Promise<void> => {
       jobDescription,
       status: "pending",
       source: "web",
+      scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+      durationMinutes: durationMinutes ?? null,
+      timezone: timezone ?? null,
     })
     .returning();
 
@@ -138,6 +144,7 @@ router.post("/interviews", async (req, res): Promise<void> => {
     source: "web",
     createdAt: interview.createdAt.toISOString(),
     completedAt: null,
+    scheduledAt: interview.scheduledAt ? interview.scheduledAt.toISOString() : null,
     questions: questionRows,
   });
 });
@@ -169,6 +176,7 @@ router.get("/interviews/:id", async (req, res): Promise<void> => {
     ...interview,
     createdAt: interview.createdAt.toISOString(),
     completedAt: interview.completedAt ? interview.completedAt.toISOString() : null,
+    scheduledAt: interview.scheduledAt ? interview.scheduledAt.toISOString() : null,
     questions,
   });
 });
@@ -366,6 +374,144 @@ router.get("/interviews/:id/scorecard", async (req, res): Promise<void> => {
     answers,
     questions,
   });
+});
+
+// ─── Recording Upload & Playback ─────────────────────────────────────────────
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
+});
+
+router.post(
+  "/interviews/:id/upload-recording",
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  upload.single("recording") as any,
+  async (req, res): Promise<void> => {
+    const id = parseInt(req.params.id ?? "", 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: "Invalid interview id" });
+      return;
+    }
+
+    if (!s3Enabled) {
+      res.status(503).json({ error: "AWS S3 not configured — recording upload disabled" });
+      return;
+    }
+
+    const file = (req as Express.Request & { file?: Express.Multer.File }).file;
+    if (!file) {
+      res.status(400).json({ error: "No recording file in request (field: recording)" });
+      return;
+    }
+
+    const [interview] = await db
+      .select({ id: interviewsTable.id })
+      .from(interviewsTable)
+      .where(eq(interviewsTable.id, id));
+
+    if (!interview) {
+      res.status(404).json({ error: "Interview not found" });
+      return;
+    }
+
+    try {
+      const key = generateRecordingKey(id);
+      await uploadRecording(file.buffer, key, file.mimetype || "video/webm");
+
+      await db
+        .update(interviewsTable)
+        .set({ recordingKey: key })
+        .where(eq(interviewsTable.id, id));
+
+      res.json({ success: true, recordingKey: key });
+    } catch (err) {
+      req.log.error({ err }, "Failed to upload recording to S3");
+      res.status(500).json({ error: "Failed to upload recording" });
+    }
+  }
+);
+
+router.get("/interviews/:id/recording", async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id ?? "", 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid interview id" });
+    return;
+  }
+
+  const [interview] = await db
+    .select({
+      recordingKey: interviewsTable.recordingKey,
+      recordingDurationSeconds: interviewsTable.recordingDurationSeconds,
+    })
+    .from(interviewsTable)
+    .where(eq(interviewsTable.id, id));
+
+  if (!interview) {
+    res.status(404).json({ error: "Interview not found" });
+    return;
+  }
+
+  if (!interview.recordingKey) {
+    res.status(404).json({ error: "No recording for this interview" });
+    return;
+  }
+
+  if (!s3Enabled) {
+    res.status(503).json({ error: "AWS S3 not configured" });
+    return;
+  }
+
+  try {
+    const recordingUrl = await getSignedUrl(interview.recordingKey);
+    res.json({
+      recordingUrl,
+      durationSeconds: interview.recordingDurationSeconds ?? null,
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to generate presigned URL");
+    res.status(500).json({ error: "Failed to generate recording URL" });
+  }
+});
+
+// ─── AI Interview Conversation Engine ───────────────────────────────────────
+
+const InterviewConversationBody = z.object({
+  interviewId: z.number().int(),
+  jobTitle: z.string(),
+  jobDescription: z.string(),
+  conversationHistory: z.array(
+    z.object({
+      role: z.enum(["ai", "candidate"]),
+      text: z.string(),
+    })
+  ),
+  elapsedSeconds: z.number(),
+  durationMinutes: z.number().int().optional(),
+});
+
+router.post("/interview-conversation", async (req, res): Promise<void> => {
+  const parsed = InterviewConversationBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  const { jobTitle, jobDescription, conversationHistory, elapsedSeconds, durationMinutes } = parsed.data;
+
+  try {
+    const result = await generateInterviewConversation(
+      jobTitle,
+      jobDescription,
+      conversationHistory,
+      elapsedSeconds,
+      durationMinutes ?? 30
+    );
+    res.json(result);
+  } catch (err) {
+    req.log.error({ err }, "Failed to generate interview conversation");
+    res.status(500).json({ error: "Failed to generate next question" });
+  }
 });
 
 export default router;

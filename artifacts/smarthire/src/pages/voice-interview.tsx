@@ -1,592 +1,1122 @@
-import { useState, useEffect, useRef } from "react";
-import { useLocation } from "wouter";
+import { useState, useEffect, useRef, useCallback } from "react";
 
-type InterviewStatus =
-  | "connecting"
-  | "ready"
-  | "speaking"
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type Phase =
+  | "loading"
+  | "waiting"       // scheduled but not yet within 10 min window
+  | "permissions"
+  | "camera-starting"
+  | "greeting"
   | "listening"
-  | "processing"
+  | "thinking"
+  | "speaking"
+  | "submitting"
   | "complete"
   | "error";
 
-interface Answer {
-  questionIndex: number;
-  questionText: string;
-  answerText: string;
-  duration: number;
+interface InterviewData {
+  id: number;
+  candidateName: string;
+  jobTitle: string;
+  jobDescription: string;
+  recruiterName: string;
+  candidateEmail: string;
+  scheduledAt: string | null;
+  durationMinutes: number | null;
+  timezone: string | null;
 }
 
-export default function VoiceInterview() {
-  const [, navigate] = useLocation();
-  const [status, setStatus] = useState<InterviewStatus>("connecting");
-  const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [questions, setQuestions] = useState<string[]>([]);
-  const [answers, setAnswers] = useState<Answer[]>([]);
-  const [transcript, setTranscript] = useState("");
-  const [errorMsg, setErrorMsg] = useState("");
-  const [timeLeft, setTimeLeft] = useState(60);
-  const [candidateName, setCandidateName] = useState("Candidate");
-  const [jobTitle, setJobTitle] = useState("Software Engineer");
-  const [jobDescription, setJobDescription] = useState("");
-  const [cameraReady, setCameraReady] = useState(false);
+interface ConversationEntry {
+  role: "ai" | "candidate";
+  text: string;
+}
 
-  const recognitionRef = useRef<any>(null);
-  const synthRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const answerStartRef = useRef<number>(0);
-  const questionsRef = useRef<string[]>([]);
+interface ConversationApiResponse {
+  nextQuestion: string;
+  isComplete: boolean;
+  topicArea: string;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const GREETING =
+  "Hello and a very warm welcome! I am AccionHire, your AI interviewer for today. " +
+  "It is wonderful to meet you. Before we dive into the technical discussion, " +
+  "I would love to know more about you. Please go ahead and introduce yourself — " +
+  "tell me about your background, your overall experience, the technologies you " +
+  "have worked with, and what you consider your greatest strengths. " +
+  "Please take your time, there is absolutely no rush.";
+
+const API_BASE = "http://localhost:8080/api";
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function topicLabel(area: string): string {
+  const labels: Record<string, string> = {
+    introduction: "Introduction",
+    technical: "Technical",
+    problemSolving: "Problem Solving",
+    behavioral: "Behavioral",
+    situational: "Situational",
+    wrapup: "Wrap Up",
+  };
+  return labels[area] ?? area;
+}
+
+// ─── Speaking Bars Animation ──────────────────────────────────────────────────
+
+function SpeakingBars({ color = "bg-blue-400" }: { color?: string }) {
+  return (
+    <div className="flex items-center gap-0.5">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <div
+          key={i}
+          className={`w-0.5 rounded-full animate-pulse ${color}`}
+          style={{
+            height: `${6 + i * 3}px`,
+            animationDelay: `${i * 0.1}s`,
+            animationDuration: "0.6s",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+export default function VoiceInterview() {
+  // ── State ─────────────────────────────────────────────────────────────────
+  const [phase, setPhase] = useState<Phase>("loading");
+  const [interview, setInterview] = useState<InterviewData | null>(null);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [aiMessage, setAiMessage] = useState("");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [conversationHistory, setConversationHistory] = useState<ConversationEntry[]>([]);
+  const [topicArea, setTopicArea] = useState("introduction");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [isCameraReady, setIsCameraReady] = useState(false);
+  const [waitingSecondsLeft, setWaitingSecondsLeft] = useState(0);
+
+  // ── Refs (avoid stale closures in async callbacks) ────────────────────────
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
+  const finalTranscriptRef = useRef("");
+  const transcriptRef = useRef(""); // live display transcript ref
+  const phaseRef = useRef<Phase>("loading");
+  const conversationRef = useRef<ConversationEntry[]>([]);
+  const elapsedSecondsRef = useRef(0);
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const interviewRef = useRef<InterviewData | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "done" | "failed">("idle");
+  const [recordingChunkCount, setRecordingChunkCount] = useState(0);
 
-  const idFromUrl = Number(window.location.pathname.split("/").pop());
-
-  useEffect(() => {
-    if (idFromUrl) {
-      loadInterview(idFromUrl);
-    }
-    return () => {
-      stopCamera();
-      window.speechSynthesis.cancel();
-    };
+  // ── Sync helpers ──────────────────────────────────────────────────────────
+  const setPhaseSync = useCallback((p: Phase) => {
+    phaseRef.current = p;
+    setPhase(p);
   }, []);
 
+  const addToConversation = useCallback((entry: ConversationEntry) => {
+    const next = [...conversationRef.current, entry];
+    conversationRef.current = next;
+    setConversationHistory([...next]);
+  }, []);
+
+  // ── Interview ID from URL ─────────────────────────────────────────────────
+  const interviewId = Number(window.location.pathname.split("/").pop());
+
+  // ── Boot ──────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!interviewId || isNaN(interviewId)) {
+      setErrorMsg("Invalid interview URL. Please check the link provided to you.");
+      setPhaseSync("error");
+      return;
+    }
+    loadInterview(interviewId);
+
+    return () => {
+      cleanup();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─── Schedule helpers ─────────────────────────────────────────────────────
+
+  /** Seconds remaining until the link activates (scheduledAt − 10 min). */
+  function secondsUntilActive(scheduledAt: string): number {
+    const activateMs = new Date(scheduledAt).getTime() - 10 * 60 * 1000;
+    return Math.max(0, Math.floor((activateMs - Date.now()) / 1000));
+  }
+
+  function formatCountdown(secs: number): string {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  function formatScheduledDateTime(isoString: string): { date: string; time: string } {
+    const d = new Date(isoString);
+    return {
+      date: d.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" }),
+      time: d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }),
+    };
+  }
+
+  // ─── Waiting countdown — ticks every second, auto-advances when ready ────
+  useEffect(() => {
+    if (phase !== "waiting") return;
+    const interview = interviewRef.current;
+    if (!interview?.scheduledAt) return;
+
+    const tick = () => {
+      const secs = secondsUntilActive(interview.scheduledAt!);
+      setWaitingSecondsLeft(secs);
+      if (secs === 0) setPhaseSync("permissions");
+    };
+
+    tick(); // run immediately
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  // ─── Load interview data ──────────────────────────────────────────────────
   async function loadInterview(id: number) {
     try {
-      const res = await fetch(`http://localhost:8080/api/livekit/interview/${id}`);
+      const res = await fetch(`${API_BASE}/livekit/interview/${id}`);
       if (!res.ok) throw new Error("Interview not found");
-      const interview = await res.json();
+      const data = (await res.json()) as InterviewData;
+      setInterview(data);
+      interviewRef.current = data;
 
-      setCandidateName(interview.candidateName ?? "Candidate");
-      setJobTitle(interview.jobTitle ?? "Software Engineer");
-      setJobDescription(interview.jobDescription ?? "");
-
-      const qRes = await fetch("http://localhost:8080/api/interviews", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recruiterName: interview.recruiterName,
-          candidateName: interview.candidateName,
-          candidateEmail: interview.candidateEmail,
-          jobTitle: interview.jobTitle,
-          jobDescription: interview.jobDescription,
-        }),
-      });
-
-      const qData = await qRes.json();
-      const qs = qData.questions?.map((q: any) => q.questionText) ?? [];
-      setQuestions(qs);
-      questionsRef.current = qs;
-      setStatus("ready");
-    } catch (err) {
-      setErrorMsg("Failed to load interview. Please try again.");
-      setStatus("error");
+      // Check schedule: if scheduledAt is set and we're more than 10 min away → waiting
+      if (data.scheduledAt && secondsUntilActive(data.scheduledAt) > 0) {
+        setWaitingSecondsLeft(secondsUntilActive(data.scheduledAt));
+        setPhaseSync("waiting");
+      } else {
+        setPhaseSync("permissions");
+      }
+    } catch {
+      setErrorMsg("Failed to load interview. Please check the link and try again.");
+      setPhaseSync("error");
     }
   }
 
-  async function startCamera() {
+  // ─── Cleanup on unmount ───────────────────────────────────────────────────
+  function cleanup() {
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    stopListeningInternal();
+    stopCameraInternal();
+    window.speechSynthesis.cancel();
+  }
+
+  // ─── Camera ──────────────────────────────────────────────────────────────
+  async function startCamera(): Promise<boolean> {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720, facingMode: "user" },
+        video: { facingMode: "user" },
         audio: true,
       });
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        try {
+          await videoRef.current.play();
+        } catch {
+          // autoplay might be blocked — the `autoPlay` attr handles it
+        }
       }
-
-      // Start recording
-      const recorder = new MediaRecorder(stream, {
-        mimeType: "video/webm;codecs=vp9,opus",
-      });
-      recordedChunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
-      };
-      recorder.start(1000);
-      mediaRecorderRef.current = recorder;
-
-      setCameraReady(true);
+      setIsCameraReady(true);
+      return true;
     } catch (err) {
-      console.error("Camera access failed:", err);
-      // Continue without camera
-      setCameraReady(false);
+      console.warn("Camera/mic access failed:", err);
+      setIsCameraReady(false);
+      return false;
     }
   }
 
-  function stopCamera() {
-    mediaRecorderRef.current?.stop();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    setCameraReady(false);
-  }
-
-  async function handleStartClick() {
-    await startCamera();
-    startInterview(questionsRef.current);
-  }
-
-  function startInterview(qs: string[]) {
-    setCurrentQuestion(0);
-    askQuestion(0, qs);
-  }
-
-  function askQuestion(index: number, qs: string[]) {
-    if (index >= qs.length) {
-      finishInterview();
-      return;
+  function stopCameraInternal() {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
-
-    setCurrentQuestion(index);
-    setTranscript("");
-    setStatus("speaking");
-
-    const questionText = `Question ${index + 1} of ${qs.length}. ${qs[index]}`;
-    speak(questionText, () => {
-      setStatus("listening");
-      answerStartRef.current = Date.now();
-      startListening(index, qs);
-      startTimer(index, qs);
-    });
+    setIsCameraReady(false);
   }
 
-  function speak(text: string, onEnd?: () => void) {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9;
-    utterance.pitch = 1;
-    utterance.volume = 1;
-
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(
-      (v) =>
-        v.name.includes("Google") ||
-        v.name.includes("Natural") ||
-        v.name.includes("Neural")
-    );
-    if (preferred) utterance.voice = preferred;
-
-    utterance.onend = () => onEnd?.();
-    synthRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
-  }
-
-  function startListening(index: number, qs: string[]) {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      setErrorMsg("Speech recognition not supported. Please use Chrome.");
-      setStatus("error");
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-
-    recognition.onresult = (event: any) => {
-      let interim = "";
-      let final = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          final += event.results[i][0].transcript;
-        } else {
-          interim += event.results[i][0].transcript;
-        }
-      }
-      setTranscript(final || interim);
-    };
-
-    recognition.onerror = (event: any) => {
-      if (event.error !== "no-speech") {
-        console.error("Speech recognition error:", event.error);
-      }
-    };
-
-    recognitionRef.current = recognition;
-    recognition.start();
-  }
-
-  function startTimer(index: number, qs: string[]) {
-    setTimeLeft(60);
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current!);
-          submitAnswer(index, qs);
-          return 0;
-        }
-        return prev - 1;
+  // ─── Elapsed timer ────────────────────────────────────────────────────────
+  function startElapsedTimer() {
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    elapsedTimerRef.current = setInterval(() => {
+      setElapsedSeconds((prev) => {
+        const next = prev + 1;
+        elapsedSecondsRef.current = next;
+        return next;
       });
     }, 1000);
   }
 
-  function submitAnswer(index: number, qs: string[]) {
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (recognitionRef.current) recognitionRef.current.stop();
+  // ─── Voice cache (populated on mount + voiceschanged) ────────────────────
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
 
-    setStatus("processing");
-    const duration = Math.round((Date.now() - answerStartRef.current) / 1000);
+  useEffect(() => {
+    const load = () => {
+      const v = window.speechSynthesis.getVoices();
+      if (v.length > 0) voicesRef.current = v;
+    };
+    load();
+    window.speechSynthesis.addEventListener("voiceschanged", load);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
+  }, []);
 
-    setAnswers((prev) => {
-      const newAnswers = [
-        ...prev,
-        {
-          questionIndex: index,
-          questionText: qs[index] ?? "",
-          answerText: transcript || "No answer provided",
-          duration,
-        },
-      ];
+  function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
+    if (voices.length === 0) return null;
+    // 1. Microsoft Ravi (Indian male)
+    const ravi = voices.find((v) => v.name.includes("Ravi"));
+    if (ravi) return ravi;
+    // 2. Microsoft Heera (Indian female)
+    const heera = voices.find((v) => v.name.includes("Heera"));
+    if (heera) return heera;
+    // 3. Any en-IN locale voice
+    const enIN = voices.find((v) => v.lang === "en-IN" || v.lang.startsWith("en-IN"));
+    if (enIN) return enIN;
+    // 4. Any voice whose name contains "indian" (case-insensitive)
+    const indian = voices.find((v) => v.name.toLowerCase().includes("indian"));
+    if (indian) return indian;
+    // 5. First en-US voice as fallback
+    return voices.find((v) => v.lang.startsWith("en-US")) ?? null;
+  }
 
-      setTimeout(() => {
-        if (index + 1 < qs.length) {
-          speak("Got it. Next question.", () => {
-            askQuestion(index + 1, qs);
-          });
+  // ─── Speech synthesis ─────────────────────────────────────────────────────
+  function speak(text: string, delayMs = 0): Promise<void> {
+    return new Promise<void>((resolve) => {
+      window.speechSynthesis.cancel();
+
+      const doSpeak = () => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 0.85;
+        utterance.pitch = 0.95;
+        utterance.volume = 1.0;
+
+        // Use cached voices; fall back to live query if cache is still empty
+        const voices = voicesRef.current.length > 0
+          ? voicesRef.current
+          : window.speechSynthesis.getVoices();
+        utterance.voice = pickVoice(voices);
+
+        // Chrome bug: speech synthesis can randomly pause
+        const resumeTimer = setInterval(() => {
+          if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+        }, 200);
+
+        utterance.onend = () => {
+          clearInterval(resumeTimer);
+          resolve();
+        };
+        utterance.onerror = () => {
+          clearInterval(resumeTimer);
+          resolve();
+        };
+
+        window.speechSynthesis.speak(utterance);
+      };
+
+      const fire = () => {
+        if (delayMs > 0) {
+          setTimeout(doSpeak, delayMs);
         } else {
-          finishInterview(newAnswers);
+          doSpeak();
         }
-      }, 1000);
+      };
 
-      return newAnswers;
+      // If voices already cached, speak immediately (with optional delay)
+      if (voicesRef.current.length > 0) {
+        fire();
+      } else {
+        // Wait for voiceschanged, with a safety-net timeout
+        let called = false;
+        const once = () => {
+          if (called) return;
+          called = true;
+          const v = window.speechSynthesis.getVoices();
+          if (v.length > 0) voicesRef.current = v;
+          fire();
+        };
+        window.speechSynthesis.addEventListener("voiceschanged", once, { once: true });
+        setTimeout(once, 600);
+      }
     });
   }
 
-  async function finishInterview(finalAnswers?: Answer[]) {
-    stopCamera();
-    setStatus("complete");
-    window.speechSynthesis.cancel();
+  // ─── Speech recognition ───────────────────────────────────────────────────
+  function startListening() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setErrorMsg("Speech recognition is not supported. Please use Chrome or Edge.");
+      setPhaseSync("error");
+      return;
+    }
 
-    speak(
-      "Thank you for completing the interview. I am now evaluating your responses. " +
-        "The recruiter will receive a detailed report shortly."
-    );
+    // Reset transcript
+    finalTranscriptRef.current = "";
+    transcriptRef.current = "";
+    setLiveTranscript("");
 
-    const answersToSubmit = finalAnswers ?? answers;
+    stopListeningInternal();
 
-    try {
-      const res = await fetch("http://localhost:8080/api/bot/submit-interview", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": "smarthire-bot-key",
-        },
-        body: JSON.stringify({
-          candidateName,
-          recruiterEmail: "recruiter@company.com",
-          jobTitle,
-          jobDescription,
-          answers: answersToSubmit.map((a) => ({
-            questionText: a.questionText,
-            answerText: a.answerText,
-            confidenceScore: null,
-            fillerWordCount: null,
-            pauseCount: null,
-            speechDurationSeconds: a.duration,
-          })),
-        }),
-      });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const recognition = new SpeechRecognition() as any;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-IN";
+    recognition.maxAlternatives = 1;
 
-      if (res.ok) {
-        const result = await res.json();
-        setTimeout(() => {
-          navigate(`/scorecard/${result.interviewId}`);
-        }, 5000);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalTranscriptRef.current += (event.results[i][0].transcript as string) + " ";
+        } else {
+          interim += event.results[i][0].transcript as string;
+        }
       }
-    } catch (err) {
-      console.error("Failed to submit:", err);
+      const display = (finalTranscriptRef.current + interim).trim();
+      transcriptRef.current = display;
+      setLiveTranscript(display);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onerror = (event: any) => {
+      if ((event.error as string) !== "no-speech") {
+        console.warn("Speech recognition error:", event.error);
+      }
+    };
+
+    // Auto-restart if recognition stops while still listening
+    recognition.onend = () => {
+      if (phaseRef.current === "listening") {
+        try {
+          recognition.start();
+        } catch {
+          // already running or browser blocked
+        }
+      }
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+    } catch {
+      // might throw if already running
     }
   }
 
-  const handleNextAnswer = () => {
-    if (status !== "listening") return;
-    submitAnswer(currentQuestion, questions);
-  };
+  function stopListeningInternal() {
+    if (recognitionRef.current) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (recognitionRef.current as any).onend = null; // prevent auto-restart
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+      recognitionRef.current = null;
+    }
+  }
 
-  const statusMessages: Record<InterviewStatus, string> = {
-    connecting: "Loading interview...",
-    ready: "Ready to begin",
-    speaking: "SmartHire is speaking...",
-    listening: "Listening to your answer...",
-    processing: "Processing your answer...",
-    complete: "Interview complete! Evaluating responses...",
-    error: errorMsg,
-  };
+  // ─── Start MediaRecorder on the active stream ────────────────────────────
+  function startRecording() {
+    if (!streamRef.current) return;
+    recordingChunksRef.current = [];
 
-  const statusColors: Record<InterviewStatus, string> = {
-    connecting: "bg-gray-500",
-    ready: "bg-blue-500",
-    speaking: "bg-purple-500",
-    listening: "bg-green-500",
-    processing: "bg-yellow-500",
-    complete: "bg-green-600",
-    error: "bg-red-500",
-  };
+    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+      ? "video/webm;codecs=vp9,opus"
+      : "video/webm";
 
-  const isActive =
-    status === "speaking" ||
-    status === "listening" ||
-    status === "processing";
+    try {
+      const recorder = new MediaRecorder(streamRef.current, { mimeType });
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          recordingChunksRef.current.push(e.data);
+          setRecordingChunkCount((n) => n + 1);
+        }
+      };
+      recorder.start(1000); // collect a chunk every second
+      mediaRecorderRef.current = recorder;
+    } catch (err) {
+      console.warn("[recording] MediaRecorder failed to start:", err);
+    }
+  }
+
+  // ─── Stop recorder and upload to S3 ──────────────────────────────────────
+  // NOTE: Call only after the recorder has already been stopped (onstop fired).
+  async function uploadRecording(id: number): Promise<void> {
+    const chunks = recordingChunksRef.current;
+    if (chunks.length === 0) return;
+
+    const blob = new Blob(chunks, { type: "video/webm" });
+    const sizeMB = blob.size / (1024 * 1024);
+
+    if (sizeMB > 500) {
+      console.warn("[recording] File too large:", sizeMB.toFixed(1), "MB — skipping upload");
+      setUploadStatus("failed");
+      return;
+    }
+
+    setUploadStatus("uploading");
+
+    try {
+      const formData = new FormData();
+      formData.append("recording", blob, `interview-${id}.webm`);
+
+      const res = await fetch(`${API_BASE}/interviews/${id}/upload-recording`, {
+        method: "POST",
+        body: formData,
+      });
+
+      setUploadStatus(res.ok ? "done" : "failed");
+    } catch (err) {
+      console.warn("[recording] Upload failed:", err);
+      setUploadStatus("failed");
+    }
+  }
+
+  // ─── Handle "Allow & Start" button ───────────────────────────────────────
+  async function handleRequestPermissions() {
+    setPhaseSync("camera-starting");
+    await startCamera();
+    startRecording();
+    startElapsedTimer();
+
+    // Play greeting
+    setPhaseSync("greeting");
+    setAiMessage(GREETING);
+    addToConversation({ role: "ai", text: GREETING });
+    await speak(GREETING, 150); // 150 ms delay so voices finish loading before first utterance
+
+    // Transition to listening
+    setPhaseSync("listening");
+    startListening();
+  }
+
+  // ─── Handle "Done Answering" button ──────────────────────────────────────
+  async function handleDoneAnswering() {
+    if (phaseRef.current !== "listening") return;
+
+    stopListeningInternal();
+
+    const answerText = transcriptRef.current.trim() || "No answer provided";
+    addToConversation({ role: "candidate", text: answerText });
+
+    setPhaseSync("thinking");
+    setLiveTranscript("");
+
+    const data = interviewRef.current!;
+    const currentConversation = [...conversationRef.current];
+    const elapsed = elapsedSecondsRef.current;
+
+    // Force wrap-up after 30 min regardless of AI response
+    // Hard-stop at 100% of configured duration (default 30 min)
+    const durationSecs = (data.durationMinutes ?? 30) * 60;
+    const forceComplete = elapsed >= durationSecs;
+
+    try {
+      const res = await fetch(`${API_BASE}/interview-conversation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          interviewId: data.id,
+          jobTitle: data.jobTitle,
+          jobDescription: data.jobDescription,
+          conversationHistory: currentConversation,
+          elapsedSeconds: elapsed,
+          durationMinutes: data.durationMinutes ?? 30,
+        }),
+      });
+
+      const result = (await res.json()) as ConversationApiResponse;
+
+      // Hard stop at 30 min
+      if (forceComplete && !result.isComplete) {
+        result.isComplete = true;
+        result.nextQuestion =
+          "Thank you so much for your time today. It's been a wonderful conversation and I've really enjoyed learning about you. Our team will carefully review your interview and we'll be in touch with detailed feedback soon. All the very best!";
+      }
+
+      if (result.isComplete) {
+        setTopicArea("wrapup");
+        setAiMessage(result.nextQuestion);
+        addToConversation({ role: "ai", text: result.nextQuestion });
+        setPhaseSync("speaking");
+        await speak(result.nextQuestion);
+        await submitInterview();
+      } else {
+        setTopicArea(result.topicArea ?? "technical");
+        setAiMessage(result.nextQuestion);
+        addToConversation({ role: "ai", text: result.nextQuestion });
+        setPhaseSync("speaking");
+        await speak(result.nextQuestion);
+        setPhaseSync("listening");
+        startListening();
+      }
+    } catch (err) {
+      console.error("Failed to get next question:", err);
+      // Graceful fallback — ask a generic question and continue
+      const fallback =
+        "Could you tell me about a recent project you're most proud of and what your specific contributions were to its success?";
+      setAiMessage(fallback);
+      addToConversation({ role: "ai", text: fallback });
+      setPhaseSync("speaking");
+      await speak(fallback);
+      setPhaseSync("listening");
+      startListening();
+    }
+  }
+
+  // ─── Submit interview for scoring ─────────────────────────────────────────
+  async function submitInterview() {
+    setPhaseSync("submitting");
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+
+    // 1. Stop recorder first — stream must still be alive so the final chunk flushes
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      await new Promise<void>((resolve) => {
+        recorder.onstop = () => resolve();
+        recorder.stop();
+      });
+    }
+
+    // 2. Safe to stop camera now that recorder is done
+    stopCameraInternal();
+
+    // 3. Build answers from candidate turns (questionIndex = position in conversation)
+    const history = conversationRef.current;
+    const answers = history
+      .filter((entry) => entry.role === "candidate")
+      .map((entry, i) => ({
+        questionIndex: i,
+        answerText: entry.text,
+      }));
+
+    // 4. Upload recording and submit interview in parallel — neither blocks the other
+    const uploadPromise = uploadRecording(interviewId);
+
+    const submitPromise: Promise<void> = (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/interviews/${interviewId}/submit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answers }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          throw new Error(`Submit returned ${res.status}: ${body}`);
+        }
+      } catch (err) {
+        console.error("[submit] Failed to submit interview for evaluation:", err);
+        // Non-fatal — still show the thank you screen
+      }
+    })();
+
+    await Promise.all([uploadPromise, submitPromise]);
+
+    setPhaseSync("complete");
+  }
+
+  // ─── Derived state ────────────────────────────────────────────────────────
+  const isInterviewActive = !["loading", "waiting", "permissions", "camera-starting", "submitting", "complete", "error"].includes(phase);
+  const answersCount = conversationHistory.filter((m) => m.role === "candidate").length;
+  const isNearEnd = elapsedSeconds >= 1680;
+
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center p-6">
-      {/* Header */}
-      <div className="text-center mb-6">
-        <h1 className="text-3xl font-bold text-white mb-1">SmartHire</h1>
-        <p className="text-gray-400 text-sm">AI Video Interview</p>
-      </div>
+    <div className="relative h-screen w-screen bg-black overflow-hidden select-none">
 
-      {/* Status */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className={`w-3 h-3 rounded-full ${statusColors[status]} animate-pulse`} />
-        <span className="text-gray-300 text-sm">{statusMessages[status]}</span>
-      </div>
+      {/* ── VIDEO ELEMENT (always in DOM, shown only during active interview) ── */}
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        playsInline
+        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${
+          isInterviewActive && isCameraReady ? "opacity-100" : "opacity-0"
+        }`}
+        style={{ transform: "scaleX(-1)" }}
+      />
 
-      {/* Main layout — side by side when active */}
-      <div className={`w-full ${isActive ? "max-w-5xl flex gap-6" : "max-w-2xl"}`}>
-
-        {/* Video feed — shown during active interview */}
-        {isActive && (
-          <div className="flex-1">
-            <div className="relative rounded-2xl overflow-hidden bg-gray-900 border border-gray-800"
-              style={{ aspectRatio: "16/9" }}>
-              <video
-                ref={videoRef}
-                autoPlay
-                muted
-                playsInline
-                className="w-full h-full object-cover"
-                style={{ transform: "scaleX(-1)" }}
-              />
-
-              {/* Camera off fallback */}
-              {!cameraReady && (
-                <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
-                  <div className="text-center">
-                    <div className="text-5xl mb-2">👤</div>
-                    <p className="text-gray-500 text-sm">Camera unavailable</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Name badge */}
-              <div className="absolute bottom-3 left-3 bg-black/70 rounded-lg px-3 py-1">
-                <span className="text-white text-sm font-medium">
-                  📹 {candidateName}
-                </span>
-              </div>
-
-              {/* LIVE badge */}
-              <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-red-600/90 rounded-full px-3 py-1">
-                <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                <span className="text-white text-xs font-bold tracking-wide">REC</span>
-              </div>
-
-              {/* AI Speaking overlay */}
-              {status === "speaking" && (
-                <div className="absolute bottom-3 right-3 bg-purple-600/90 rounded-lg px-3 py-1 flex items-center gap-2">
-                  <div className="flex gap-0.5">
-                    {[...Array(4)].map((_, i) => (
-                      <div
-                        key={i}
-                        className="w-1 bg-white rounded-full animate-pulse"
-                        style={{
-                          height: `${8 + i * 3}px`,
-                          animationDelay: `${i * 0.15}s`,
-                        }}
-                      />
-                    ))}
-                  </div>
-                  <span className="text-white text-xs">AI Speaking</span>
-                </div>
-              )}
-
-              {/* Listening indicator */}
-              {status === "listening" && (
-                <div className="absolute bottom-3 right-3 bg-green-600/90 rounded-lg px-3 py-1 flex items-center gap-2">
-                  <div className="flex gap-0.5">
-                    {[...Array(4)].map((_, i) => (
-                      <div
-                        key={i}
-                        className="w-1 bg-white rounded-full animate-pulse"
-                        style={{
-                          height: `${8 + i * 3}px`,
-                          animationDelay: `${i * 0.1}s`,
-                        }}
-                      />
-                    ))}
-                  </div>
-                  <span className="text-white text-xs">Listening</span>
-                </div>
-              )}
+      {/* Dark overlay when camera isn't ready (during interview) */}
+      {isInterviewActive && !isCameraReady && (
+        <div className="absolute inset-0 bg-gray-950 flex items-center justify-center">
+          <div className="text-center">
+            <div className="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-3">
+              <svg className="w-10 h-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.069A1 1 0 0121 8.882v6.236a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
+              </svg>
             </div>
-
-            {/* Timer below video */}
-            {status === "listening" && (
-              <div className="mt-3 flex items-center justify-between px-1">
-                <span className="text-gray-500 text-xs">Time remaining</span>
-                <span className={`text-sm font-bold ${timeLeft <= 10 ? "text-red-400" : "text-gray-300"}`}>
-                  {timeLeft}s
-                </span>
-              </div>
-            )}
+            <p className="text-gray-500 text-sm">Camera unavailable</p>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Right panel / main card */}
-        <div className={`${isActive ? "w-80 flex-shrink-0" : "w-full"} bg-gray-900 rounded-2xl p-6 border border-gray-800`}>
-
-          {/* CONNECTING */}
-          {status === "connecting" && (
-            <div className="text-center py-8">
-              <div className="text-4xl mb-4 animate-spin">⏳</div>
-              <p className="text-gray-400">Loading your interview...</p>
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* LOADING                                                             */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {phase === "loading" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950">
+          <div className="text-center">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center mx-auto mb-6">
+              <span className="text-white text-2xl font-black">S</span>
             </div>
-          )}
+            <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+            <p className="text-gray-400 text-sm">Loading your interview...</p>
+          </div>
+        </div>
+      )}
 
-          {/* READY */}
-          {status === "ready" && (
-            <div className="text-center py-4">
-              <div className="text-5xl mb-4">🎥</div>
-              <h2 className="text-xl font-semibold text-white mb-2">
-                Hello, {candidateName}!
-              </h2>
-              <p className="text-gray-400 text-sm mb-2">
-                Role: <strong className="text-orange-400">{jobTitle}</strong>
-              </p>
-              <p className="text-gray-500 text-sm mb-8">
-                <strong>{questions.length} questions</strong> · 60 seconds each<br />
-                Camera + microphone will be requested.<br />
-                Speak clearly and look at the camera.
-              </p>
-              <button
-                onClick={handleStartClick}
-                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 px-8 rounded-xl text-lg transition-all transform hover:scale-105"
-              >
-                🎥 Start Interview
-              </button>
-              <p className="text-gray-600 text-xs mt-3">
-                Chrome recommended · Allow camera & mic access
-              </p>
-            </div>
-          )}
-
-          {/* ACTIVE INTERVIEW */}
-          {isActive && (
-            <>
-              {/* Progress */}
-              <div className="mb-4">
-                <div className="flex justify-between text-xs text-gray-400 mb-2">
-                  <span>Q{currentQuestion + 1} of {questions.length}</span>
-                  <span className="text-orange-400 font-medium">
-                    {Math.round((currentQuestion / questions.length) * 100)}% done
-                  </span>
-                </div>
-                <div className="w-full bg-gray-800 rounded-full h-1.5">
-                  <div
-                    className="bg-orange-500 h-1.5 rounded-full transition-all duration-500"
-                    style={{ width: `${(currentQuestion / questions.length) * 100}%` }}
-                  />
-                </div>
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* WAITING — scheduled but not yet within the 10-min activation window */}
+      {phase === "waiting" && interview?.scheduledAt && (() => {
+        const { date, time } = formatScheduledDateTime(interview.scheduledAt);
+        return (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
+            <div className="max-w-md w-full text-center">
+              {/* Logo */}
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-red-700 to-red-500 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-red-900/40">
+                <span className="text-white text-3xl font-black">A</span>
               </div>
 
-              {/* Question */}
-              <div className="mb-4">
-                <p className="text-xs text-orange-400 uppercase tracking-wider mb-2">
-                  Question {currentQuestion + 1}
-                </p>
-                <p className="text-white text-sm leading-relaxed">
-                  {questions[currentQuestion]}
-                </p>
-              </div>
+              <h1 className="text-2xl font-bold text-white mb-2">Interview Not Started Yet</h1>
+              <p className="text-gray-400 text-sm mb-6">
+                Your interview is scheduled for
+              </p>
 
-              {/* Live transcript */}
-              {status === "listening" && transcript && (
-                <div className="bg-gray-800 rounded-xl p-3 mb-4 border border-gray-700">
-                  <p className="text-xs text-gray-500 mb-1">Your answer</p>
-                  <p className="text-white text-xs leading-relaxed">{transcript}</p>
-                </div>
-              )}
-
-              {/* Done button */}
-              {status === "listening" && (
-                <button
-                  onClick={handleNextAnswer}
-                  className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-sm"
-                >
-                  ✓ Done — Next Question
-                </button>
-              )}
-
-              {status === "processing" && (
-                <div className="text-center py-4">
-                  <p className="text-yellow-400 text-sm animate-pulse">
-                    ⏳ Processing...
-                  </p>
-                </div>
-              )}
-
-              {/* Previous answers */}
-              {answers.length > 0 && (
-                <div className="mt-4 border-t border-gray-800 pt-4">
-                  <p className="text-xs text-gray-600 uppercase tracking-wider mb-2">
-                    Completed
-                  </p>
-                  <div className="space-y-1">
-                    {answers.map((a, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <div className="w-5 h-5 rounded-full bg-green-500/20 flex items-center justify-center flex-shrink-0">
-                          <span className="text-green-400 text-xs">✓</span>
-                        </div>
-                        <p className="text-gray-500 text-xs truncate">Q{i + 1}: {a.answerText}</p>
-                      </div>
-                    ))}
+              {/* Schedule pill */}
+              <div className="bg-gray-900 rounded-2xl border border-gray-700 p-5 mb-6 text-left space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">📅</span>
+                  <div>
+                    <p className="text-gray-400 text-xs uppercase tracking-wider">Date</p>
+                    <p className="text-white font-semibold">{date}</p>
                   </div>
                 </div>
-              )}
-            </>
-          )}
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">⏰</span>
+                  <div>
+                    <p className="text-gray-400 text-xs uppercase tracking-wider">Time</p>
+                    <p className="text-white font-semibold">{time}</p>
+                  </div>
+                </div>
+                {interview.durationMinutes && (
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">⏱️</span>
+                    <div>
+                      <p className="text-gray-400 text-xs uppercase tracking-wider">Duration</p>
+                      <p className="text-white font-semibold">{interview.durationMinutes} minutes</p>
+                    </div>
+                  </div>
+                )}
+              </div>
 
-          {/* COMPLETE */}
-          {status === "complete" && (
-            <div className="text-center py-4">
-              <div className="text-6xl mb-4">✅</div>
-              <h2 className="text-xl font-semibold text-white mb-2">
-                Interview Complete!
-              </h2>
-              <p className="text-gray-400 text-sm mb-6">
-                Evaluating your responses...<br />
-                Redirecting to scorecard shortly.
+              {/* Countdown */}
+              <div className="bg-blue-950/40 border border-blue-700/40 rounded-xl px-5 py-4 mb-6">
+                <p className="text-blue-400 text-xs uppercase tracking-wider mb-1">Link activates in</p>
+                <p className="text-white text-3xl font-mono font-bold tracking-wider">
+                  {formatCountdown(waitingSecondsLeft)}
+                </p>
+              </div>
+
+              <p className="text-gray-600 text-sm">
+                Please join back closer to your interview time.
+                <br />
+                This page checks automatically every second.
               </p>
-              <div className="space-y-2 text-left">
-                {answers.map((a, i) => (
-                  <div key={i} className="bg-gray-800 rounded-lg p-3">
-                    <p className="text-xs text-orange-400 mb-1">Q{i + 1}</p>
-                    <p className="text-xs text-gray-300 truncate">{a.answerText}</p>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* PERMISSIONS                                                         */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {phase === "permissions" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6 overflow-y-auto">
+          <div className="max-w-md w-full my-auto">
+            <div className="bg-gray-900 rounded-2xl p-8 border border-gray-800 text-center">
+              {/* Logo */}
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-red-700 to-red-500 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-red-900/40">
+                <span className="text-white text-3xl font-black">A</span>
+              </div>
+
+              <h1 className="text-2xl font-bold text-white mb-1">AccionHire AI Interview</h1>
+              <p className="text-gray-400 text-sm mb-6">
+                Welcome,{" "}
+                <span className="text-white font-semibold">{interview?.candidateName}</span>.<br />
+                You're interviewing for{" "}
+                <span className="text-blue-400 font-semibold">{interview?.jobTitle}</span>.
+              </p>
+
+              {/* Permission items */}
+              <div className="space-y-3 mb-8 text-left">
+                {[
+                  {
+                    icon: "📷",
+                    color: "bg-green-500/20 text-green-400",
+                    title: "Camera access",
+                    desc: "Your video + audio will be recorded and stored securely for HR review",
+                  },
+                  {
+                    icon: "🎙️",
+                    color: "bg-blue-500/20 text-blue-400",
+                    title: "Microphone access",
+                    desc: "Browser-native speech recognition — no audio sent to servers",
+                  },
+                  {
+                    icon: "⏱️",
+                    color: "bg-purple-500/20 text-purple-400",
+                    title: "~30 minute session",
+                    desc: "Conversational AI interview — no per-answer time limit, speak freely",
+                  },
+                ].map(({ icon, color, title, desc }) => (
+                  <div
+                    key={title}
+                    className="flex items-start gap-3 bg-gray-800/50 rounded-xl p-3 border border-gray-700/30"
+                  >
+                    <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${color}`}>
+                      <span className="text-base">{icon}</span>
+                    </div>
+                    <div>
+                      <p className="text-white text-sm font-medium leading-tight">{title}</p>
+                      <p className="text-gray-500 text-xs mt-0.5">{desc}</p>
+                    </div>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
 
-          {/* ERROR */}
-          {status === "error" && (
-            <div className="text-center py-4">
-              <div className="text-5xl mb-4">❌</div>
-              <p className="text-red-400 text-sm">{errorMsg}</p>
+              <button
+                onClick={handleRequestPermissions}
+                className="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold py-4 px-6 rounded-xl transition-all text-base shadow-lg shadow-blue-900/50"
+              >
+                Allow &amp; Start Interview
+              </button>
+              <p className="text-gray-700 text-xs mt-3">
+                Best in Chrome · Requires camera + microphone permissions
+              </p>
             </div>
-          )}
+          </div>
         </div>
-      </div>
+      )}
 
-      <p className="text-gray-700 text-xs mt-6">
-        Powered by SmartHire AI · Chrome recommended
-      </p>
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* CAMERA STARTING                                                     */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {phase === "camera-starting" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950">
+          <div className="text-center">
+            <div className="w-12 h-12 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <p className="text-gray-400 text-sm">Starting camera...</p>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ACTIVE INTERVIEW OVERLAYS                                           */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {isInterviewActive && (
+        <>
+          {/* ── Top bar ─────────────────────────────────────────────────── */}
+          <div className="absolute top-0 left-0 right-0 z-10 flex justify-between items-center p-3 sm:p-4">
+            {/* Recording indicator */}
+            <div className="flex items-center gap-2 bg-black/70 backdrop-blur-md rounded-full px-3 py-1.5 border border-white/10">
+              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="text-white text-xs font-bold tracking-widest">REC</span>
+              {recordingChunkCount > 0 && (
+                <span className="text-white/50 text-xs">
+                  {(recordingChunkCount * 1000 / (1024 * 1024)).toFixed(1)}MB
+                </span>
+              )}
+            </div>
+
+            {/* Centre label */}
+            <div className="bg-black/70 backdrop-blur-md rounded-full px-4 py-1.5 border border-white/10">
+              <span className="text-white/70 text-xs font-semibold tracking-wider">AccionHire AI Interview</span>
+            </div>
+
+            {/* Elapsed timer */}
+            <div className="flex items-center gap-1.5 bg-black/70 backdrop-blur-md rounded-full px-3 py-1.5 border border-white/10">
+              <div className={`w-1.5 h-1.5 rounded-full ${isNearEnd ? "bg-orange-400 animate-pulse" : "bg-green-400"}`} />
+              <span className={`text-sm font-mono font-bold ${isNearEnd ? "text-orange-400" : "text-green-400"}`}>
+                {formatTime(elapsedSeconds)}
+              </span>
+            </div>
+          </div>
+
+          {/* ── Candidate name label (bottom-left of video) ──────────────── */}
+          <div className="absolute z-10" style={{ bottom: "calc(var(--bottom-panel-height, 220px) + 12px)", left: "16px" }}>
+            <div className="bg-black/70 backdrop-blur-md rounded-lg px-3 py-1.5 border border-white/10">
+              <span className="text-white text-sm font-medium">{interview?.candidateName}</span>
+            </div>
+          </div>
+
+          {/* ── AI avatar (bottom-right of video) ───────────────────────── */}
+          <div className="absolute z-10 right-4" style={{ bottom: "calc(var(--bottom-panel-height, 220px) + 12px)" }}>
+            <div className="bg-black/80 backdrop-blur-md rounded-2xl p-3 border border-white/10 flex items-center gap-2.5 shadow-xl">
+              {/* Avatar */}
+              <div className="relative flex-shrink-0">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-700 to-red-500 flex items-center justify-center shadow-lg">
+                  <span className="text-white text-sm font-black">A</span>
+                </div>
+                {/* Online dot */}
+                <div
+                  className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-black ${
+                    phase === "greeting" || phase === "speaking"
+                      ? "bg-green-400 animate-pulse"
+                      : phase === "thinking"
+                      ? "bg-yellow-400 animate-pulse"
+                      : "bg-gray-500"
+                  }`}
+                />
+              </div>
+
+              {/* Info */}
+              <div>
+                <p className="text-white text-xs font-bold leading-tight">AccionHire</p>
+                <p className="text-gray-400 text-xs">
+                  {phase === "greeting" || phase === "speaking"
+                    ? "Speaking..."
+                    : phase === "listening"
+                    ? "Listening"
+                    : phase === "thinking"
+                    ? "Thinking..."
+                    : "AI Interviewer"}
+                </p>
+              </div>
+
+              {/* Speaking bars */}
+              {(phase === "greeting" || phase === "speaking") && (
+                <SpeakingBars color="bg-blue-400" />
+              )}
+              {phase === "thinking" && (
+                <div className="flex gap-1">
+                  {[0, 1, 2].map((i) => (
+                    <div
+                      key={i}
+                      className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-bounce"
+                      style={{ animationDelay: `${i * 0.15}s` }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Topic badge ──────────────────────────────────────────────── */}
+          {topicArea && (
+            <div className="absolute top-14 sm:top-16 left-3 sm:left-4 z-10">
+              <div className="bg-black/60 backdrop-blur-md rounded-full px-3 py-1 border border-white/10">
+                <span className="text-gray-300 text-xs">{topicLabel(topicArea)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* ── Bottom panel ─────────────────────────────────────────────── */}
+          <div className="absolute bottom-0 left-0 right-0 z-10">
+            {/* Gradient fade */}
+            <div className="h-16 bg-gradient-to-t from-black/90 to-transparent pointer-events-none" />
+
+            {/* Panel body */}
+            <div className="bg-black/90 backdrop-blur-md px-4 pt-3 pb-6 border-t border-white/5 space-y-3">
+
+              {/* AI message (greeting / speaking) */}
+              {(phase === "greeting" || phase === "speaking") && aiMessage && (
+                <div className="bg-blue-950/60 rounded-xl px-4 py-3 border border-blue-700/30">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <SpeakingBars color="bg-blue-400" />
+                    <span className="text-blue-400 text-xs font-semibold">AccionHire AI</span>
+                  </div>
+                  <p className="text-white text-sm leading-relaxed line-clamp-3">{aiMessage}</p>
+                </div>
+              )}
+
+              {/* Thinking indicator */}
+              {phase === "thinking" && (
+                <div className="flex items-center justify-center gap-3 py-2">
+                  <div className="flex gap-1.5">
+                    {[0, 1, 2].map((i) => (
+                      <div
+                        key={i}
+                        className="w-2.5 h-2.5 bg-blue-500 rounded-full animate-bounce"
+                        style={{ animationDelay: `${i * 0.15}s` }}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-gray-300 text-sm">Processing your answer...</span>
+                </div>
+              )}
+
+              {/* Live transcript (listening) */}
+              {phase === "listening" && (
+                <div className="bg-gray-900/80 rounded-xl px-4 py-3 border border-gray-700/50 min-h-[60px]">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
+                    <span className="text-green-400 text-xs font-semibold">Listening — speak freely</span>
+                  </div>
+                  {liveTranscript ? (
+                    <p className="text-white text-sm leading-relaxed">{liveTranscript}</p>
+                  ) : (
+                    <p className="text-gray-600 text-sm italic">Your words will appear here as you speak...</p>
+                  )}
+                </div>
+              )}
+
+              {/* Done Answering button */}
+              {phase === "listening" && (
+                <button
+                  onClick={handleDoneAnswering}
+                  className="w-full bg-green-600 hover:bg-green-500 active:bg-green-700 text-white font-bold py-3.5 px-6 rounded-xl transition-all text-base shadow-xl shadow-green-900/40 flex items-center justify-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Done Answering
+                </button>
+              )}
+
+              {/* Speaking / thinking hint */}
+              {(phase === "greeting" || phase === "speaking") && (
+                <p className="text-center text-gray-600 text-xs pb-1">
+                  AI is speaking — please listen
+                </p>
+              )}
+
+              {/* Answer counter */}
+              {answersCount > 0 && phase === "listening" && (
+                <p className="text-center text-gray-700 text-xs">
+                  {answersCount} answer{answersCount !== 1 ? "s" : ""} recorded
+                </p>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* SUBMITTING                                                          */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {phase === "submitting" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950">
+          <div className="text-center">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center mx-auto mb-6 animate-pulse">
+              <span className="text-white text-2xl font-black">S</span>
+            </div>
+            <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+            <p className="text-white font-semibold mb-1">Submitting your interview...</p>
+            {uploadStatus === "uploading" ? (
+              <p className="text-blue-400 text-sm">Uploading recording...</p>
+            ) : uploadStatus === "done" ? (
+              <p className="text-green-400 text-sm">Recording saved</p>
+            ) : uploadStatus === "failed" ? (
+              <p className="text-yellow-400 text-sm">Upload failed — recording not saved</p>
+            ) : (
+              <p className="text-gray-500 text-sm">Evaluating your responses with AI</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* COMPLETE                                                            */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {phase === "complete" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6 overflow-y-auto">
+          <div className="max-w-md w-full my-auto text-center">
+            {/* Check mark */}
+            <div className="w-24 h-24 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-6">
+              <svg className="w-12 h-12 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+
+            <h1 className="text-3xl font-bold text-white mb-3">Interview Complete!</h1>
+            <p className="text-gray-300 text-lg mb-2">
+              Your recruiter will receive a detailed report shortly.
+            </p>
+            <p className="text-gray-500 text-sm mb-8 leading-relaxed">
+              Thank you, {interview?.candidateName?.split(" ")[0]}. We appreciate your time and wish you all the best.
+            </p>
+
+            {/* Summary card */}
+            <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800 text-left space-y-3 mb-6">
+              <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Session Summary</p>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 text-sm">Role</span>
+                <span className="text-white text-sm font-medium">{interview?.jobTitle}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 text-sm">Duration</span>
+                <span className="text-white text-sm font-mono font-medium">{formatTime(elapsedSeconds)}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 text-sm">Questions answered</span>
+                <span className="text-white text-sm font-medium">{answersCount}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 text-sm">Recording</span>
+                {uploadStatus === "done" && (
+                  <span className="text-green-400 text-sm font-medium">Saved ✓</span>
+                )}
+                {uploadStatus === "failed" && (
+                  <span className="text-yellow-400 text-sm font-medium">Upload failed</span>
+                )}
+                {(uploadStatus === "idle" || uploadStatus === "uploading") && (
+                  <span className="text-gray-500 text-sm">—</span>
+                )}
+              </div>
+            </div>
+
+            <p className="text-gray-700 text-xs">You may now close this tab.</p>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ERROR                                                               */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {phase === "error" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center">
+            <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-6">
+              <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <h1 className="text-xl font-bold text-white mb-3">Something went wrong</h1>
+            <p className="text-red-400 text-sm mb-6 leading-relaxed">{errorMsg}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-gray-800 hover:bg-gray-700 text-white px-6 py-3 rounded-xl text-sm font-medium transition-colors border border-gray-700"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

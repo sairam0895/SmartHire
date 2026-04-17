@@ -29,7 +29,7 @@ export async function startBotServer(): Promise<void> {
   });
 
   botApp.listen(BOT_PORT, () => {
-    logger.info({ port: BOT_PORT }, "SmartHire Bot server listening");
+    logger.info({ port: BOT_PORT }, "AccionHire Bot server listening");
   });
 
   // ── Slack Bot ──────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ export async function startBotServer(): Promise<void> {
     try {
       const slackApp = createSlackApp();
       await slackApp.start();
-      logger.info("SmartHire Slack bot connected");
+      logger.info("AccionHire Slack bot connected");
     } catch (err) {
       logger.error({ err }, "Failed to start Slack bot");
     }

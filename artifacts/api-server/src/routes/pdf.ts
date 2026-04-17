@@ -5,8 +5,8 @@ import PDFDocument from "pdfkit";
 
 const router: IRouter = Router();
 
-const NAVY = "#1e3a5f";
-const ORANGE = "#f97316";
+const NAVY = "#3D3D3D";
+const ORANGE = "#E5002B";
 const GRAY = "#64748b";
 const LIGHT = "#f8fafc";
 
@@ -55,8 +55,8 @@ router.get("/scorecard/:id/pdf", async (req, res): Promise<void> => {
   const pageWidth = doc.page.width - 100;
 
   doc.rect(0, 0, doc.page.width, 90).fill(NAVY);
-  doc.fontSize(22).fillColor("#ffffff").text("SmartHire", 50, 25);
-  doc.fontSize(11).fillColor("#94a3b8").text("AI Interview Scorecard", 50, 52);
+  doc.fontSize(22).fillColor("#ffffff").text("AccionHire", 50, 25);
+  doc.fontSize(11).fillColor("#f0a0a0").text("AI Interview Scorecard", 50, 52);
 
   const verdictColor =
     scorecard.verdict === "Strong Hire" ? "#16a34a" :

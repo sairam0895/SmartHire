@@ -32,8 +32,8 @@ export function generateAgentToken(roomName: string): string {
     process.env.LIVEKIT_API_KEY,
     process.env.LIVEKIT_API_SECRET,
     {
-      identity: `smarthire-agent`,
-      name: "SmartHire AI",
+      identity: `accionhire-agent`,
+      name: "AccionHire AI",
       ttl: "2h",
     }
   );
@@ -51,5 +51,5 @@ export function generateAgentToken(roomName: string): string {
 }
 
 export function generateRoomName(interviewId: number): string {
-  return `smarthire-interview-${interviewId}-${Date.now()}`;
+  return `accionhire-interview-${interviewId}-${Date.now()}`;
 }

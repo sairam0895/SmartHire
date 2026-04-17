@@ -151,7 +151,7 @@ export default function InterviewPage() {
       <header className="bg-white border-b py-4 px-6 sticky top-0 z-10">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div>
-            <h1 className="font-semibold text-lg">SmartHire Assessment</h1>
+            <h1 className="font-semibold text-lg">AccionHire Assessment</h1>
             <p className="text-sm text-muted-foreground">{interview.jobTitle}</p>
           </div>
           <div className="text-sm font-medium text-slate-500">

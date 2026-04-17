@@ -29,7 +29,7 @@ export function createSlackApp(): App {
     appToken: process.env.SLACK_APP_TOKEN,
   });
 
-  app.command("/smarthire", async ({ command, ack, client }) => {
+  app.command("/accionhire", async ({ command, ack, client }) => {
     await ack();
 
     const userId = command.user_id;
@@ -67,7 +67,7 @@ export function createSlackApp(): App {
 
     await client.chat.postMessage({
       channel: dmChannelId,
-      text: `👋 Hello *${candidateName}*! I'm *SmartHire*, your AI interviewer.\n\nI'll be conducting your L1 screening interview for the role of *${jobTitle}*.\n\nI will ask you *7 questions* — please answer each one clearly.\n\nType *ready* when you want to begin.`,
+      text: `👋 Hello *${candidateName}*! I'm *AccionHire*, your AI interviewer.\n\nI'll be conducting your L1 screening interview for the role of *${jobTitle}*.\n\nI will ask you *7 questions* — please answer each one clearly.\n\nType *ready* when you want to begin.`,
     });
   });
 
@@ -119,7 +119,7 @@ async function startInterview(client: any, session: InterviewSession): Promise<v
     if (!result.questions || result.questions.length === 0) {
       await client.chat.postMessage({
         channel: session.dmChannelId,
-        text: "❌ Failed to generate questions. Please try `/smarthire` again.",
+        text: "❌ Failed to generate questions. Please try `/accionhire` again.",
       });
       sessions.delete(session.userId);
       return;
@@ -196,7 +196,7 @@ async function completeInterview(client: any, session: InterviewSession): Promis
 
   try {
     const apiUrl = "http://localhost:8080/api/bot/submit-interview";
-    const apiKey = process.env.BOT_API_KEY ?? "smarthire-bot-key";
+    const apiKey = process.env.BOT_API_KEY ?? "accionhire-bot-key";
 
     const payload = {
       candidateName: session.candidateName,

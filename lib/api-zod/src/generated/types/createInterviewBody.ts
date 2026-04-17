@@ -12,4 +12,7 @@ export interface CreateInterviewBody {
   candidateEmail: string;
   jobTitle: string;
   jobDescription: string;
+  scheduledAt?: string | null;
+  durationMinutes?: number | null;
+  timezone?: string | null;
 }
