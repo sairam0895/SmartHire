@@ -1,0 +1,14 @@
+[build]
+builder = "nixpacks"
+
+[build.buildCommand]
+cmd = "npm install -g pnpm && pnpm install --no-frozen-lockfile && cd artifacts/api-server && pnpm run build"
+
+[deploy]
+startCommand = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
+healthcheckPath = "/api/healthz"
+restartPolicyType = "on_failure"
+
+[environments.production.variables]
+NODE_ENV = "production"
+PORT = "8080"
