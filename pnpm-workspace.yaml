@@ -1,3 +1,5 @@
+nodeLinker: hoisted
+
 # ============================================================================
 # SECURITY: Minimum release age for npm packages (supply-chain attack defense)
 # ============================================================================
