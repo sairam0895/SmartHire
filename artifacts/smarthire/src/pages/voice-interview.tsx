@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useLocation } from "wouter";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,7 +49,8 @@ const GREETING =
   "have worked with, and what you consider your greatest strengths. " +
   "Please take your time, there is absolutely no rush.";
 
-const API_BASE = "http://localhost:8080/api";
+import { apiUrl } from "@/lib/api";
+const API_BASE = `${apiUrl}/api`;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -94,6 +96,8 @@ function SpeakingBars({ color = "bg-blue-400" }: { color?: string }) {
 
 export default function VoiceInterview() {
   // ── State ─────────────────────────────────────────────────────────────────
+  const [, navigate] = useLocation();
+  const [hasConsented, setHasConsented] = useState(false);
   const [phase, setPhase] = useState<Phase>("loading");
   const [interview, setInterview] = useState<InterviewData | null>(null);
   const [liveTranscript, setLiveTranscript] = useState("");
@@ -606,12 +610,14 @@ export default function VoiceInterview() {
     // 2. Safe to stop camera now that recorder is done
     stopCameraInternal();
 
-    // 3. Build answers from candidate turns (questionIndex = position in conversation)
+    // 3. Build answers from candidate turns with their corresponding AI questions
     const history = conversationRef.current;
+    const aiTurns = history.filter((entry) => entry.role === "ai");
     const answers = history
       .filter((entry) => entry.role === "candidate")
       .map((entry, i) => ({
         questionIndex: i,
+        questionText: aiTurns[i]?.text ?? "",
         answerText: entry.text,
       }));
 
@@ -623,7 +629,7 @@ export default function VoiceInterview() {
         const res = await fetch(`${API_BASE}/interviews/${interviewId}/submit`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ answers }),
+          body: JSON.stringify({ answers, conversationHistory: conversationRef.current }),
         });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
@@ -699,7 +705,7 @@ export default function VoiceInterview() {
           <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
             <div className="max-w-md w-full text-center">
               {/* Logo */}
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-red-700 to-red-500 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-red-900/40">
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-700 to-indigo-500 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-red-900/40">
                 <span className="text-white text-3xl font-black">A</span>
               </div>
 
@@ -753,14 +759,58 @@ export default function VoiceInterview() {
         );
       })()}
 
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* CONSENT                                                             */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {phase === "permissions" && !hasConsented && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
+          <div className="bg-gray-900 rounded-2xl p-8 max-w-md w-full">
+            <img src="/accionhire-logo.png" className="h-10 w-auto mb-6" alt="AccionHire" />
+            <h2 className="text-white text-2xl font-bold mb-2">Before We Begin</h2>
+            <p className="text-gray-400 mb-6">This interview will be:</p>
+            <ul className="space-y-3 mb-8">
+              {[
+                "Conducted by AccionHire AI",
+                "Recorded (video + audio)",
+                "Evaluated automatically",
+                "Shared with the recruiting team",
+              ].map((item) => (
+                <li key={item} className="flex items-center gap-3 text-gray-300">
+                  <span className="text-green-400">✓</span>
+                  {item}
+                </li>
+              ))}
+            </ul>
+            <p className="text-gray-500 text-sm mb-6">
+              By clicking "I Agree &amp; Continue", you consent to this AI interview being recorded and evaluated.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => navigate("/")}
+                className="flex-1 py-3 rounded-lg border border-gray-600 text-gray-400 hover:bg-gray-800"
+              >
+                Decline
+              </button>
+              <button
+                onClick={() => setHasConsented(true)}
+                className="flex-1 py-3 rounded-lg text-white font-semibold"
+                style={{ backgroundColor: "#6366F1" }}
+              >
+                I Agree &amp; Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* PERMISSIONS                                                         */}
       {/* ════════════════════════════════════════════════════════════════════ */}
-      {phase === "permissions" && (
+      {phase === "permissions" && hasConsented && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6 overflow-y-auto">
           <div className="max-w-md w-full my-auto">
             <div className="bg-gray-900 rounded-2xl p-8 border border-gray-800 text-center">
               {/* Logo */}
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-red-700 to-red-500 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-red-900/40">
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-700 to-indigo-500 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-red-900/40">
                 <span className="text-white text-3xl font-black">A</span>
               </div>
 
@@ -855,13 +905,13 @@ export default function VoiceInterview() {
 
             {/* Centre label */}
             <div className="bg-black/70 backdrop-blur-md rounded-full px-4 py-1.5 border border-white/10">
-              <span className="text-white/70 text-xs font-semibold tracking-wider">AccionHire AI Interview</span>
+              <img src="/accionhire-logo.png" alt="AccionHire" className="h-6 w-auto" />
             </div>
 
             {/* Elapsed timer */}
             <div className="flex items-center gap-1.5 bg-black/70 backdrop-blur-md rounded-full px-3 py-1.5 border border-white/10">
-              <div className={`w-1.5 h-1.5 rounded-full ${isNearEnd ? "bg-orange-400 animate-pulse" : "bg-green-400"}`} />
-              <span className={`text-sm font-mono font-bold ${isNearEnd ? "text-orange-400" : "text-green-400"}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${isNearEnd ? "bg-orange-400 animate-pulse" : "bg-[#6366F1]"}`} />
+              <span className={`text-sm font-mono font-bold ${isNearEnd ? "text-orange-400" : "text-[#6366F1]"}`}>
                 {formatTime(elapsedSeconds)}
               </span>
             </div>
@@ -879,7 +929,7 @@ export default function VoiceInterview() {
             <div className="bg-black/80 backdrop-blur-md rounded-2xl p-3 border border-white/10 flex items-center gap-2.5 shadow-xl">
               {/* Avatar */}
               <div className="relative flex-shrink-0">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-700 to-red-500 flex items-center justify-center shadow-lg">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-700 to-indigo-500 flex items-center justify-center shadow-lg">
                   <span className="text-white text-sm font-black">A</span>
                 </div>
                 {/* Online dot */}
@@ -896,7 +946,16 @@ export default function VoiceInterview() {
 
               {/* Info */}
               <div>
-                <p className="text-white text-xs font-bold leading-tight">AccionHire</p>
+                <div className="flex items-center gap-1 mb-0.5">
+                  <svg width="16" height="18" viewBox="0 0 40 44" fill="none">
+                    <polygon points="20,0 40,44 20,44" fill="#6366F1"/>
+                    <polygon points="20,0 0,44 20,44" fill="#555555"/>
+                  </svg>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>
+                    <span style={{ color: '#6366F1' }}>Accion</span>
+                    <span style={{ color: '#555555' }}>Hire</span>
+                  </span>
+                </div>
                 <p className="text-gray-400 text-xs">
                   {phase === "greeting" || phase === "speaking"
                     ? "Speaking..."
@@ -930,7 +989,7 @@ export default function VoiceInterview() {
           {topicArea && (
             <div className="absolute top-14 sm:top-16 left-3 sm:left-4 z-10">
               <div className="bg-black/60 backdrop-blur-md rounded-full px-3 py-1 border border-white/10">
-                <span className="text-gray-300 text-xs">{topicLabel(topicArea)}</span>
+                <span className="text-xs font-medium" style={{ color: '#6366F1' }}>{topicLabel(topicArea)}</span>
               </div>
             </div>
           )}
@@ -989,7 +1048,7 @@ export default function VoiceInterview() {
               {phase === "listening" && (
                 <button
                   onClick={handleDoneAnswering}
-                  className="w-full bg-green-600 hover:bg-green-500 active:bg-green-700 text-white font-bold py-3.5 px-6 rounded-xl transition-all text-base shadow-xl shadow-green-900/40 flex items-center justify-center gap-2"
+                  className="w-full bg-[#6366F1] hover:bg-[#4F46E5] active:bg-[#4F46E5] text-white font-bold py-3.5 px-6 rounded-xl transition-all text-base shadow-xl shadow-indigo-900/40 flex items-center justify-center gap-2"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, desc, avg, count } from "drizzle-orm";
+import { eq, and, desc, avg, count, ilike, or } from "drizzle-orm";
 import { db, interviewsTable, questionsTable, answersTable, scorecardsTable } from "@workspace/db";
 import {
   CreateInterviewBody,
@@ -7,14 +7,17 @@ import {
   SubmitInterviewParams,
   GetScorecardParams,
 } from "@workspace/api-zod";
-import { generateInterviewQuestions, evaluateInterview, generateInterviewConversation } from "../lib/ai";
+import { evaluateInterview, generateInterviewConversation } from "../lib/ai";
 import { uploadRecording, getSignedUrl, generateRecordingKey, s3Enabled } from "../lib/s3";
+import { requireAuth } from "../middlewares/requireAuth";
 import { z } from "zod";
 import multer from "multer";
 
 const router: IRouter = Router();
 
-router.get("/interviews/stats", async (req, res): Promise<void> => {
+// ─── Stats ───────────────────────────────────────────────────────────────────
+
+router.get("/interviews/stats", requireAuth, async (req, res): Promise<void> => {
   const total = await db.select({ count: count() }).from(interviewsTable);
   const completed = await db
     .select({ count: count() })
@@ -30,22 +33,53 @@ router.get("/interviews/stats", async (req, res): Promise<void> => {
     .from(interviewsTable)
     .where(eq(interviewsTable.status, "completed"));
 
+  // Use ILIKE for flexible verdict matching
   const strongHireCount = await db
     .select({ count: count() })
     .from(interviewsTable)
-    .where(and(eq(interviewsTable.verdict, "Strong Hire"), eq(interviewsTable.status, "completed")));
+    .where(
+      and(
+        eq(interviewsTable.status, "completed"),
+        ilike(interviewsTable.verdict, "%strong hire%")
+      )
+    );
+
   const hireCount = await db
     .select({ count: count() })
     .from(interviewsTable)
-    .where(and(eq(interviewsTable.verdict, "Hire"), eq(interviewsTable.status, "completed")));
+    .where(
+      and(
+        eq(interviewsTable.status, "completed"),
+        or(
+          ilike(interviewsTable.verdict, "hire"),
+          ilike(interviewsTable.verdict, "% hire")
+        )
+      )
+    );
+
   const maybeCount = await db
     .select({ count: count() })
     .from(interviewsTable)
-    .where(and(eq(interviewsTable.verdict, "Maybe"), eq(interviewsTable.status, "completed")));
+    .where(
+      and(
+        eq(interviewsTable.status, "completed"),
+        ilike(interviewsTable.verdict, "%maybe%")
+      )
+    );
+
   const noHireCount = await db
     .select({ count: count() })
     .from(interviewsTable)
-    .where(and(eq(interviewsTable.verdict, "No Hire"), eq(interviewsTable.status, "completed")));
+    .where(
+      and(
+        eq(interviewsTable.status, "completed"),
+        or(
+          ilike(interviewsTable.verdict, "%no hire%"),
+          ilike(interviewsTable.verdict, "%reject%"),
+          ilike(interviewsTable.verdict, "%do not hire%")
+        )
+      )
+    );
 
   res.json({
     total: Number(total[0]?.count ?? 0),
@@ -61,11 +95,25 @@ router.get("/interviews/stats", async (req, res): Promise<void> => {
   });
 });
 
-router.get("/interviews", async (req, res): Promise<void> => {
-  const interviews = await db
-    .select()
-    .from(interviewsTable)
-    .orderBy(desc(interviewsTable.createdAt));
+// ─── List interviews ──────────────────────────────────────────────────────────
+
+router.get("/interviews", requireAuth, async (req, res): Promise<void> => {
+  const emailFilter = typeof req.query.email === "string" ? req.query.email : null;
+
+  let interviews;
+  if (emailFilter && req.user?.role !== "admin") {
+    // Recruiter: filter by recruiterName (email passed from frontend)
+    interviews = await db
+      .select()
+      .from(interviewsTable)
+      .where(ilike(interviewsTable.recruiterName, `%${emailFilter}%`))
+      .orderBy(desc(interviewsTable.createdAt));
+  } else {
+    interviews = await db
+      .select()
+      .from(interviewsTable)
+      .orderBy(desc(interviewsTable.createdAt));
+  }
 
   const mapped = interviews.map((i) => ({
     ...i,
@@ -77,7 +125,9 @@ router.get("/interviews", async (req, res): Promise<void> => {
   res.json(mapped);
 });
 
-router.post("/interviews", async (req, res): Promise<void> => {
+// ─── Create interview (no question generation) ────────────────────────────────
+
+router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
   const parsed = CreateInterviewBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -107,47 +157,17 @@ router.post("/interviews", async (req, res): Promise<void> => {
     return;
   }
 
-  let generateResult: Awaited<ReturnType<typeof generateInterviewQuestions>>;
-  try {
-    generateResult = await generateInterviewQuestions(jobDescription, jobTitle);
-  } catch (err) {
-    req.log.error({ err }, "Failed to generate interview questions");
-    res.status(500).json({ error: "Failed to generate interview questions. Please try again." });
-    return;
-  }
-
-  if (generateResult.questions.length === 0) {
-    res.status(500).json({ error: "AI did not return questions. Please try again." });
-    return;
-  }
-
-  await db
-    .update(interviewsTable)
-    .set({ llmUsed: generateResult.llmUsed })
-    .where(eq(interviewsTable.id, interview.id));
-
-  const questionRows = await db
-    .insert(questionsTable)
-    .values(
-      generateResult.questions.map((q, i) => ({
-        interviewId: interview.id,
-        questionIndex: i,
-        questionText: q.questionText,
-        questionType: q.questionType,
-      }))
-    )
-    .returning();
-
   res.status(201).json({
     ...interview,
-    llmUsed: generateResult.llmUsed,
     source: "web",
     createdAt: interview.createdAt.toISOString(),
     completedAt: null,
     scheduledAt: interview.scheduledAt ? interview.scheduledAt.toISOString() : null,
-    questions: questionRows,
   });
 });
+
+// ─── Get single interview ─────────────────────────────────────────────────────
+// Public — no auth required (candidate access)
 
 router.get("/interviews/:id", async (req, res): Promise<void> => {
   const params = GetInterviewParams.safeParse(req.params);
@@ -181,8 +201,12 @@ router.get("/interviews/:id", async (req, res): Promise<void> => {
   });
 });
 
+// ─── Submit interview ─────────────────────────────────────────────────────────
+// Public — no auth required (candidate submits from voice interview page)
+
 const SubmitAnswerInputExtended = z.object({
   questionIndex: z.number().int(),
+  questionText: z.string().optional(),
   answerText: z.string(),
   confidenceScore: z.number().nullable().optional(),
   fillerWordCount: z.number().int().nullable().optional(),
@@ -192,6 +216,10 @@ const SubmitAnswerInputExtended = z.object({
 
 const SubmitBodyExtended = z.object({
   answers: z.array(SubmitAnswerInputExtended),
+  conversationHistory: z.array(z.object({
+    role: z.enum(["ai", "candidate"]),
+    text: z.string(),
+  })).optional(),
 });
 
 router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
@@ -232,26 +260,24 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
   const endTime = Date.now();
   const durationSeconds = Math.floor((endTime - startTime) / 1000);
 
-  const { answers } = bodyParsed.data;
+  const { answers, conversationHistory: rawHistory } = bodyParsed.data;
 
-  const questionsAndAnswers = answers.map((a) => {
-    const question = questions.find((q) => q.questionIndex === a.questionIndex);
-    return {
-      question: question?.questionText ?? `Question ${a.questionIndex + 1}`,
-      answer: a.answerText,
-      index: a.questionIndex,
-      speech: {
-        confidenceScore: a.confidenceScore ?? null,
-        fillerWordCount: a.fillerWordCount ?? null,
-        pauseCount: a.pauseCount ?? null,
-        speechDurationSeconds: a.speechDurationSeconds ?? null,
-      },
-    };
-  });
+  // Build conversation history: use what the client sent, or reconstruct from answers
+  const conversationHistory = rawHistory ?? answers.flatMap((a, i) => [
+    { role: "ai" as const, text: a.questionText ?? `Question ${i + 1}` },
+    { role: "candidate" as const, text: a.answerText },
+  ]);
+
+  const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
 
   let evaluation: Awaited<ReturnType<typeof evaluateInterview>>;
   try {
-    evaluation = await evaluateInterview(interview.jobTitle, interview.jobDescription, questionsAndAnswers);
+    evaluation = await evaluateInterview({
+      jobTitle: interview.jobTitle,
+      jobDescription: interview.jobDescription,
+      conversationHistory,
+      durationMinutes,
+    });
   } catch (err) {
     req.log.error({ err }, "Failed to evaluate interview");
     await db
@@ -262,19 +288,39 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     return;
   }
 
+  // Save questions from conversation if not already present
   const questionIdMap: Record<number, number> = {};
   for (const q of questions) {
     questionIdMap[q.questionIndex] = q.id;
   }
 
+  // Insert any missing questions from the conversation
+  const missingAnswers = answers.filter((a) => questionIdMap[a.questionIndex] == null);
+  if (missingAnswers.length > 0) {
+    const newQRows = await db
+      .insert(questionsTable)
+      .values(
+        missingAnswers.map((a) => ({
+          interviewId: params.data.id,
+          questionIndex: a.questionIndex,
+          questionText: a.questionText ?? `Question ${a.questionIndex + 1}`,
+          questionType: "technical" as const,
+        }))
+      )
+      .returning();
+    for (const q of newQRows) {
+      questionIdMap[q.questionIndex] = q.id;
+    }
+  }
+
   await db.insert(answersTable).values(
     answers.map((a) => ({
-      questionId: questionIdMap[a.questionIndex] ?? questions[0]!.id,
+      questionId: questionIdMap[a.questionIndex] ?? (questions[0]?.id ?? 1),
       interviewId: params.data.id,
       questionIndex: a.questionIndex,
       answerText: a.answerText,
-      score: evaluation.perAnswer.find((pa) => pa.questionIndex === a.questionIndex)?.score ?? null,
-      feedback: evaluation.perAnswer.find((pa) => pa.questionIndex === a.questionIndex)?.note ?? null,
+      score: null,
+      feedback: null,
       confidenceScore: a.confidenceScore ?? null,
       fillerWordCount: a.fillerWordCount ?? null,
       pauseCount: a.pauseCount ?? null,
@@ -286,17 +332,17 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     .insert(scorecardsTable)
     .values({
       interviewId: params.data.id,
-      technicalScore: evaluation.scores.technical,
+      technicalScore: evaluation.scores.technicalDepth,
       communicationScore: evaluation.scores.communication,
       problemSolvingScore: evaluation.scores.problemSolving,
-      roleRelevanceScore: evaluation.scores.roleRelevance,
-      speechConfidenceScore: evaluation.scores.speechConfidence ?? null,
-      overallScore: evaluation.overall,
+      roleRelevanceScore: evaluation.scores.relevantExperience,
+      speechConfidenceScore: null,
+      overallScore: evaluation.overallScore,
       verdict: evaluation.verdict,
       strengths: evaluation.strengths,
       improvements: evaluation.improvements,
-      summary: evaluation.summary,
-      recruiterNote: evaluation.recruiterNote,
+      summary: evaluation.recommendation,
+      recruiterNote: evaluation.recommendation,
     })
     .returning();
 
@@ -304,7 +350,7 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     .update(interviewsTable)
     .set({
       status: "completed",
-      overallScore: evaluation.overall,
+      overallScore: evaluation.overallScore,
       verdict: evaluation.verdict,
       completedAt: new Date(),
       duration: durationSeconds,
@@ -322,7 +368,9 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
   });
 });
 
-router.get("/interviews/:id/scorecard", async (req, res): Promise<void> => {
+// ─── Scorecard (protected) ────────────────────────────────────────────────────
+
+router.get("/interviews/:id/scorecard", requireAuth, async (req, res): Promise<void> => {
   const params = GetScorecardParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -383,12 +431,13 @@ const upload = multer({
   limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
 });
 
+// Public — candidate uploads recording
 router.post(
   "/interviews/:id/upload-recording",
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   upload.single("recording") as any,
   async (req, res): Promise<void> => {
-    const id = parseInt(req.params.id ?? "", 10);
+    const id = parseInt(String(req.params.id ?? ""), 10);
     if (isNaN(id)) {
       res.status(400).json({ error: "Invalid interview id" });
       return;
@@ -432,8 +481,9 @@ router.post(
   }
 );
 
-router.get("/interviews/:id/recording", async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id ?? "", 10);
+// Protected — recruiter fetches signed recording URL
+router.get("/interviews/:id/recording", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(String(req.params.id ?? ""), 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "Invalid interview id" });
     return;
@@ -474,7 +524,8 @@ router.get("/interviews/:id/recording", async (req, res): Promise<void> => {
   }
 });
 
-// ─── AI Interview Conversation Engine ───────────────────────────────────────
+// ─── AI Interview Conversation Engine ─────────────────────────────────────────
+// Public — candidate uses this during interview
 
 const InterviewConversationBody = z.object({
   interviewId: z.number().int(),

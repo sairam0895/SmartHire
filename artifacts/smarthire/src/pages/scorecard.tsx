@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-const PDF_BASE = "http://localhost:8080/api";
-const API_BASE = "http://localhost:8080/api";
+import { apiFetch, apiUrl } from "@/lib/api";
+const PDF_BASE = `${apiUrl}/api`;
 
 export default function ScorecardPage() {
   const params = useParams();
@@ -28,7 +28,7 @@ export default function ScorecardPage() {
 
   useEffect(() => {
     if (!id) return;
-    fetch(`${API_BASE}/interviews/${id}/recording`)
+    apiFetch(`/api/interviews/${id}/recording`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data: { recordingUrl: string; durationSeconds: number | null }) => {
         setRecordingUrl(data.recordingUrl);

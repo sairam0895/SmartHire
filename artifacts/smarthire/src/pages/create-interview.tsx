@@ -29,9 +29,8 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { Loader2, Copy, Check, ExternalLink, ArrowRight, Mail, Calendar, Clock } from "lucide-react";
-
-const API_BASE = "http://localhost:8080/api";
+import { Loader2, Copy, Check, ExternalLink, ArrowRight, Mail, Calendar, Clock, CheckCircle2 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
 const formSchema = z.object({
   recruiterName: z.string().min(2, "Recruiter name is required"),
@@ -39,7 +38,6 @@ const formSchema = z.object({
   candidateEmail: z.string().email("Invalid email address"),
   jobTitle: z.string().min(2, "Job title is required"),
   jobDescription: z.string().min(20, "Job description needs to be more detailed (min 20 chars)"),
-  // Scheduling — all optional
   interviewDate: z.string().optional(),
   interviewTime: z.string().optional(),
   durationMinutes: z.number().int().optional(),
@@ -54,7 +52,6 @@ interface CreatedInterview {
   jobTitle: string;
   scheduledAt: string | null;
   durationMinutes: number | null;
-  questions: Array<{ id: number; questionText: string; questionType: string }>;
 }
 
 export default function CreateInterview() {
@@ -66,7 +63,6 @@ export default function CreateInterview() {
   const [copied, setCopied] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Auto-detect browser timezone once on mount
   const [timezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   const form = useForm<FormValues>({
@@ -86,15 +82,13 @@ export default function CreateInterview() {
   async function onSubmit(values: FormValues) {
     setIsSubmitting(true);
     try {
-      // Combine date + time into UTC ISO string (browser local time → UTC)
       const scheduledAt =
         values.interviewDate && values.interviewTime
           ? new Date(`${values.interviewDate}T${values.interviewTime}:00`).toISOString()
           : null;
 
-      const res = await fetch(`${API_BASE}/interviews`, {
+      const res = await apiFetch("/api/interviews", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           recruiterName: values.recruiterName,
           candidateName: values.candidateName,
@@ -116,13 +110,13 @@ export default function CreateInterview() {
       setCreatedData(data);
       queryClient.invalidateQueries({ queryKey: getListInterviewsQueryKey() });
       toast({
-        title: "Interview generated successfully",
-        description: "AI has created the questions based on the job description.",
+        title: "Interview created",
+        description: "Share the link below with the candidate.",
       });
     } catch (err) {
       toast({
         variant: "destructive",
-        title: "Failed to generate interview",
+        title: "Failed to create interview",
         description: err instanceof Error ? err.message : "An unexpected error occurred.",
       });
     } finally {
@@ -137,7 +131,7 @@ export default function CreateInterview() {
   const copyToClipboard = () => {
     navigator.clipboard.writeText(interviewUrl);
     setCopied(true);
-    toast({ title: "Link copied!", description: "You can now share this with the candidate." });
+    toast({ title: "Link copied!", description: "Share this with the candidate." });
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -160,17 +154,13 @@ export default function CreateInterview() {
       "",
       `You have been invited to an AccionHire AI interview for the role of ${createdData.jobTitle}.`,
       "",
-      scheduledLabel
-        ? `📅 Scheduled: ${scheduledLabel.date} at ${scheduledLabel.time}`
-        : "",
+      scheduledLabel ? `📅 Scheduled: ${scheduledLabel.date} at ${scheduledLabel.time}` : "",
       scheduledLabel ? `⏱ Duration: ${createdData.durationMinutes ?? 30} minutes` : "",
       scheduledLabel ? "" : "",
       `Please join your interview using the link below:`,
       interviewUrl,
       "",
-      scheduledLabel
-        ? "Note: The link activates 10 minutes before your interview time."
-        : "",
+      scheduledLabel ? "Note: The link activates 10 minutes before your interview time." : "",
       "",
       "Best of luck!",
       "AccionHire Team",
@@ -187,7 +177,7 @@ export default function CreateInterview() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Create New Interview</h1>
           <p className="text-muted-foreground mt-1">
-            Provide the role details, and our AI will generate a tailored first-round interview.
+            Provide the role details and our AI will conduct a fully dynamic interview.
           </p>
         </div>
 
@@ -206,7 +196,6 @@ export default function CreateInterview() {
                   className="space-y-6"
                   data-testid="form-create-interview"
                 >
-                  {/* ── Candidate + Role Fields ─────────────────────────── */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <FormField
                       control={form.control}
@@ -286,7 +275,7 @@ export default function CreateInterview() {
                           />
                         </FormControl>
                         <FormDescription>
-                          The AI will analyze this to generate relevant technical and behavioral questions.
+                          The AI will use this to ask dynamic, role-relevant questions throughout the interview.
                         </FormDescription>
                         <FormMessage />
                       </FormItem>
@@ -295,11 +284,8 @@ export default function CreateInterview() {
 
                   <Separator />
 
-                  {/* ── Schedule Fields ──────────────────────────────────── */}
                   <div>
-                    <h3 className="text-sm font-semibold text-foreground mb-1">
-                      Schedule (Optional)
-                    </h3>
+                    <h3 className="text-sm font-semibold text-foreground mb-1">Schedule (Optional)</h3>
                     <p className="text-xs text-muted-foreground mb-4">
                       Leave blank for an always-active link (useful for demos and testing).
                     </p>
@@ -364,7 +350,6 @@ export default function CreateInterview() {
                       />
                     </div>
 
-                    {/* Timezone read-only */}
                     <div className="mt-4">
                       <p className="text-xs font-medium text-muted-foreground mb-1">Timezone (auto-detected)</p>
                       <div className="flex items-center gap-2 px-3 py-2 bg-muted rounded-md border text-sm text-muted-foreground">
@@ -377,16 +362,17 @@ export default function CreateInterview() {
                     <Button
                       type="submit"
                       disabled={isSubmitting}
-                      className="bg-accent hover:bg-accent/90 text-white min-w-[200px]"
+                      className="text-white min-w-[200px]"
+                      style={{ backgroundColor: '#6366F1' }}
                       data-testid="button-generate"
                     >
                       {isSubmitting ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Generating AI Interview...
+                          Creating Interview...
                         </>
                       ) : (
-                        "Generate Interview"
+                        "Create Interview"
                       )}
                     </Button>
                   </div>
@@ -396,20 +382,20 @@ export default function CreateInterview() {
           </Card>
         ) : (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            {/* ── Interview Ready Card ──────────────────────────────────── */}
+            {/* ── Interview Ready Card ── */}
             <Card className="border-accent">
               <CardHeader className="bg-accent/5 rounded-t-lg">
                 <CardTitle className="text-accent flex items-center gap-2">
-                  <CheckCircle className="h-5 w-5" />
+                  <CheckCircle2 className="h-5 w-5" />
                   Interview Ready
                 </CardTitle>
                 <CardDescription>
-                  Share this link with the candidate to begin their assessment.
+                  Share this link with the candidate to begin their AI interview.
                 </CardDescription>
               </CardHeader>
 
               <CardContent className="pt-6 space-y-5">
-                {/* Share link row */}
+                {/* Share link */}
                 <div className="flex items-center gap-2 p-3 bg-muted rounded-md border">
                   <Input
                     readOnly
@@ -433,7 +419,8 @@ export default function CreateInterview() {
                     variant="default"
                     size="icon"
                     onClick={() => window.open(interviewUrl, "_blank")}
-                    className="bg-primary"
+                    className="text-white"
+                    style={{ backgroundColor: '#6366F1' }}
                     data-testid="button-open-link"
                   >
                     <ExternalLink className="h-4 w-4" />
@@ -499,56 +486,9 @@ export default function CreateInterview() {
                 </div>
               </CardFooter>
             </Card>
-
-            {/* ── Generated Questions Review ────────────────────────────── */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Generated Questions Review</CardTitle>
-                <CardDescription>
-                  AI generated {createdData.questions?.length} questions based on the job description.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-6">
-                  {createdData.questions?.map((q, i) => (
-                    <div key={q.id} className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-lg text-primary">Q{i + 1}.</span>
-                        <span className="text-sm font-medium uppercase tracking-wider text-muted-foreground px-2 py-1 bg-muted rounded-full">
-                          {q.questionType}
-                        </span>
-                      </div>
-                      <p className="text-base pl-8 border-l-2 border-muted leading-relaxed">
-                        {q.questionText}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
           </div>
         )}
       </div>
     </AppLayout>
-  );
-}
-
-function CheckCircle(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-      <polyline points="22 4 12 14.01 9 11.01" />
-    </svg>
   );
 }

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import app from "./app";
 import { logger } from "./lib/logger";
 import { startBotServer } from "./bot/botServer";
+import { seedDefaultUsers } from "./lib/seed";
 
 const rawPort = process.env["PORT"];
 let port = Number(rawPort ?? 8080);
@@ -18,6 +19,7 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+  seedDefaultUsers().catch((e) => logger.error({ err: e }, "Seed failed"));
 });
 
 startBotServer().catch((err) => {

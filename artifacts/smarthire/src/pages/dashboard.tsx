@@ -1,11 +1,6 @@
 import React, { useState, useMemo } from "react";
-import { Link, useLocation } from "wouter";
-import {
-  useListInterviews,
-  useGetInterviewStats,
-  getListInterviewsQueryKey
-} from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Plus,
@@ -36,20 +31,74 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AppLayout } from "@/components/layout";
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 
 const PAGE_SIZE = 10;
 
 type FilterOption = "all" | "web" | "bot" | "pending" | "completed";
 
+interface Interview {
+  id: number;
+  candidateName: string;
+  recruiterName: string;
+  jobTitle: string;
+  status: string;
+  source: string | null;
+  llmUsed: string | null;
+  overallScore: number | null;
+  createdAt: string;
+  completedAt: string | null;
+  scheduledAt: string | null;
+}
+
+interface InterviewStats {
+  total: number;
+  completed: number;
+  pending: number;
+  averageScore: number | null;
+  verdictBreakdown: {
+    strongHire: number;
+    hire: number;
+    maybe: number;
+    noHire: number;
+  };
+}
+
 export default function Dashboard() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const { user, isAdmin } = useAuth();
   const [filter, setFilter] = useState<FilterOption>("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const { data: stats, isLoading: statsLoading } = useGetInterviewStats();
-  const { data: interviews, isLoading: interviewsLoading } = useListInterviews();
+  // Build query key that includes user role so cache is per-role
+  const interviewsKey = ["interviews", isAdmin ? "all" : user?.email ?? ""];
+  const statsKey = ["interviews-stats"];
+
+  const { data: interviews, isLoading: interviewsLoading } = useQuery<Interview[]>({
+    queryKey: interviewsKey,
+    queryFn: async () => {
+      const url = !isAdmin && user?.email
+        ? `/api/interviews?email=${encodeURIComponent(user.email)}`
+        : "/api/interviews";
+      const res = await apiFetch(url);
+      if (!res.ok) throw new Error("Failed to fetch interviews");
+      return res.json() as Promise<Interview[]>;
+    },
+    enabled: !!user,
+  });
+
+  const { data: stats, isLoading: statsLoading } = useQuery<InterviewStats>({
+    queryKey: statsKey,
+    queryFn: async () => {
+      const res = await apiFetch("/api/interviews/stats");
+      if (!res.ok) throw new Error("Failed to fetch stats");
+      return res.json() as Promise<InterviewStats>;
+    },
+    enabled: !!user,
+  });
 
   const filteredInterviews = useMemo(() => {
     if (!interviews) return [];
@@ -62,7 +111,6 @@ export default function Dashboard() {
       case "completed": list = list.filter((i) => i.status === "completed"); break;
     }
 
-    // Sort: scheduledAt desc (nulls last), then createdAt desc
     return list.sort((a, b) => {
       const aTime = a.scheduledAt ? new Date(a.scheduledAt).getTime() : 0;
       const bTime = b.scheduledAt ? new Date(b.scheduledAt).getTime() : 0;
@@ -71,13 +119,11 @@ export default function Dashboard() {
     });
   }, [interviews, filter]);
 
-  // Reset to page 1 when filter changes
   const handleFilterChange = (f: FilterOption) => {
     setFilter(f);
     setCurrentPage(1);
   };
 
-  // Pagination
   const totalItems = filteredInterviews.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
   const pagedInterviews = filteredInterviews.slice(
@@ -89,7 +135,8 @@ export default function Dashboard() {
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await queryClient.invalidateQueries({ queryKey: getListInterviewsQueryKey() });
+    await queryClient.invalidateQueries({ queryKey: interviewsKey });
+    await queryClient.invalidateQueries({ queryKey: statsKey });
     setIsRefreshing(false);
   };
 
@@ -169,7 +216,6 @@ export default function Dashboard() {
     }
   };
 
-  // Page number buttons: show max 5 around current
   const getPageNumbers = () => {
     const pages: (number | "...")[] = [];
     if (totalPages <= 7) {
@@ -192,7 +238,9 @@ export default function Dashboard() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Recruiter Dashboard</h1>
-            <p className="text-muted-foreground mt-1">Manage and track candidate interviews.</p>
+            <p className="text-muted-foreground mt-1">
+              {isAdmin ? "Viewing all interviews (Admin)." : "Viewing your interviews."}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -206,7 +254,7 @@ export default function Dashboard() {
               <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
               Refresh
             </Button>
-            <Button onClick={() => navigate("/create")} className="gap-2 bg-accent hover:bg-accent/90 text-white" data-testid="button-new-interview">
+            <Button onClick={() => navigate("/create")} className="gap-2 text-white" style={{ backgroundColor: '#6366F1' }} data-testid="button-new-interview">
               <Plus className="h-4 w-4" />
               New Interview
             </Button>
@@ -285,7 +333,8 @@ export default function Dashboard() {
                     key={btn.key}
                     variant={filter === btn.key ? "default" : "outline"}
                     size="sm"
-                    className={`text-xs ${filter === btn.key ? "bg-accent text-white hover:bg-accent/90" : ""}`}
+                    className={`text-xs ${filter === btn.key ? "text-white" : ""}`}
+                    style={filter === btn.key ? { backgroundColor: '#6366F1' } : undefined}
                     onClick={() => handleFilterChange(btn.key)}
                   >
                     {btn.label}
@@ -340,7 +389,7 @@ export default function Dashboard() {
                           <TableCell>{interview.jobTitle}</TableCell>
                           <TableCell className="text-muted-foreground whitespace-nowrap">
                             {interview.scheduledAt ? (
-                              <span className="text-blue-600 font-medium">
+                              <span className="font-medium" style={{ color: '#6366F1' }}>
                                 {format(new Date(interview.scheduledAt), "MMM d, yyyy h:mm a")}
                               </span>
                             ) : (
@@ -367,7 +416,6 @@ export default function Dashboard() {
                   </Table>
                 </div>
 
-                {/* Pagination */}
                 {totalPages > 1 && (
                   <div className="flex items-center justify-between mt-4 px-1">
                     <p className="text-sm text-muted-foreground">
@@ -392,7 +440,8 @@ export default function Dashboard() {
                             variant={currentPage === p ? "default" : "outline"}
                             size="sm"
                             onClick={() => setCurrentPage(p as number)}
-                            className={`text-xs w-8 ${currentPage === p ? "bg-accent hover:bg-accent/90 text-white" : ""}`}
+                            className={`text-xs w-8 ${currentPage === p ? "text-white" : ""}`}
+                            style={currentPage === p ? { backgroundColor: '#6366F1' } : undefined}
                           >
                             {p}
                           </Button>

@@ -12,28 +12,21 @@ export interface GenerateQuestionsResult {
   llmUsed: string;
 }
 
-export interface SpeechSignals {
-  confidenceScore?: number | null;
-  fillerWordCount?: number | null;
-  pauseCount?: number | null;
-  speechDurationSeconds?: number | null;
-}
-
 export interface EvaluationResult {
+  overallScore: number;
+  verdict: "Strong Hire" | "Hire" | "Maybe" | "No Hire";
   scores: {
-    technical: number;
+    technicalDepth: number;
     communication: number;
     problemSolving: number;
-    roleRelevance: number;
-    speechConfidence?: number | null;
+    relevantExperience: number;
+    culturalFit: number;
   };
-  overall: number;
-  verdict: "Strong Hire" | "Hire" | "Maybe" | "No Hire";
   strengths: string[];
   improvements: string[];
-  summary: string;
-  recruiterNote: string;
-  perAnswer: Array<{ questionIndex: number; score: number; note: string }>;
+  recommendation: string;
+  questionsAsked: number;
+  topicsCovered: string[];
 }
 
 export async function generateInterviewQuestions(
@@ -81,53 +74,69 @@ export async function generateInterviewQuestions(
   return { questions: [], llmUsed: "none" };
 }
 
-export async function evaluateInterview(
-  jobTitle: string,
-  jobDescription: string,
-  questionsAndAnswers: Array<{ question: string; answer: string; index: number; speech?: SpeechSignals }>
-): Promise<EvaluationResult> {
-  const hasSpeechData = questionsAndAnswers.some(
-    (qa) => qa.speech && qa.speech.confidenceScore != null
-  );
-
-  const qaText = questionsAndAnswers
-    .map((qa) => {
-      let text = `Q${qa.index + 1}: ${qa.question}\nA${qa.index + 1}: ${qa.answer}`;
-      if (qa.speech && qa.speech.confidenceScore != null) {
-        const s = qa.speech;
-        text += `\n[Speech] confidence: ${((s.confidenceScore ?? 0) * 100).toFixed(0)}%, fillers: ${s.fillerWordCount ?? 0}, pauses: ${s.pauseCount ?? 0}`;
-      }
-      return text;
-    })
+export async function evaluateInterview({
+  jobTitle,
+  jobDescription,
+  conversationHistory,
+  durationMinutes,
+}: {
+  jobTitle: string;
+  jobDescription: string;
+  conversationHistory: Array<{ role: "ai" | "candidate"; text: string }>;
+  durationMinutes: number;
+}): Promise<EvaluationResult> {
+  const transcript = conversationHistory
+    .map((m) => `${m.role === "ai" ? "Interviewer" : "Candidate"}: ${m.text}`)
     .join("\n\n");
-
-  const speechNote = hasSpeechData
-    ? "Speech signals are provided. Factor them into communication and speechConfidence scores."
-    : "No speech signals. Set speechConfidence to null.";
 
   try {
     const response = await openai.chat.completions.create({
       model: "llama-3.3-70b-versatile",
-      max_tokens: 2048,
+      max_tokens: 2000,
+      temperature: 0.3,
       messages: [
         {
           role: "system",
-          content: `You are AccionHire Evaluation Engine. Evaluate candidate answers for the role of ${jobTitle}. ${speechNote}
+          content: `You are an expert technical recruiter evaluating a candidate interview for ${jobTitle}.
+
+Evaluate based on the ACTUAL conversation transcript only.
+
+Score each 1-10:
+- technicalDepth
+- communication
+- problemSolving
+- relevantExperience
+- culturalFit
+
+Overall score = weighted average of all dimensions.
+
+Verdicts:
+- "Strong Hire": overall 8-10
+- "Hire": overall 6-7
+- "Maybe": overall 4-5
+- "No Hire": overall 1-3
+
 Return ONLY valid JSON, no markdown, no explanation:
 {
-  "scores": { "technical": 7, "communication": 6, "problemSolving": 7, "roleRelevance": 8, "speechConfidence": null },
-  "overall": 7,
-  "verdict": "Hire",
-  "strengths": ["strength1", "strength2", "strength3"],
-  "improvements": ["area1", "area2"],
-  "summary": "2-3 sentence summary.",
-  "recruiterNote": "One actionable sentence.",
-  "perAnswer": [{ "questionIndex": 0, "score": 7, "note": "feedback" }]
+  "overallScore": number,
+  "verdict": string,
+  "scores": {
+    "technicalDepth": number,
+    "communication": number,
+    "problemSolving": number,
+    "relevantExperience": number,
+    "culturalFit": number
+  },
+  "strengths": ["string"],
+  "improvements": ["string"],
+  "recommendation": "string",
+  "questionsAsked": number,
+  "topicsCovered": ["string"]
 }`,
         },
         {
           role: "user",
-          content: `Job Description:\n${jobDescription}\n\nQ&A:\n${qaText}`,
+          content: `JOB DESCRIPTION:\n${jobDescription}\n\nFULL INTERVIEW TRANSCRIPT:\n${transcript}\n\nDuration: ${durationMinutes} minutes\nTotal messages: ${conversationHistory.length}`,
         },
       ],
     });
@@ -135,8 +144,8 @@ Return ONLY valid JSON, no markdown, no explanation:
     const content = response.choices[0]?.message?.content ?? "{}";
     console.log("Evaluation raw response:", content);
 
-    const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    const clean = content.replace(/```json|```/g, "").trim();
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No JSON found");
 
     return JSON.parse(jsonMatch[0]) as EvaluationResult;
@@ -145,18 +154,14 @@ Return ONLY valid JSON, no markdown, no explanation:
   }
 
   return {
-    scores: { technical: 5, communication: 5, problemSolving: 5, roleRelevance: 5, speechConfidence: null },
-    overall: 5,
+    overallScore: 5,
     verdict: "Maybe",
+    scores: { technicalDepth: 5, communication: 5, problemSolving: 5, relevantExperience: 5, culturalFit: 5 },
     strengths: ["Evaluation could not be completed"],
     improvements: ["Please re-evaluate manually"],
-    summary: "AI evaluation could not be completed. Please review manually.",
-    recruiterNote: "Manual review recommended.",
-    perAnswer: questionsAndAnswers.map((qa) => ({
-      questionIndex: qa.index,
-      score: 5,
-      note: "Score unavailable",
-    })),
+    recommendation: "AI evaluation could not be completed. Please review manually.",
+    questionsAsked: 0,
+    topicsCovered: [],
   };
 }
 
@@ -182,16 +187,13 @@ export async function generateInterviewConversation(
 ): Promise<ConversationResult> {
   const isTestMode = durationMinutes <= 2;
   const wrapUpAt = isTestMode
-    ? durationMinutes * 60 * 0.6  // wrap up at 60% for test
+    ? durationMinutes * 60 * 0.75  // wrap up at 75% for test (90s for 2-min)
     : durationMinutes * 60 * 0.85; // wrap up at 85% for real
 
   const maxQuestions = isTestMode ? 2 : 99;
-
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const wrapUpThresholdSeconds = Math.floor(wrapUpAt);
   const shouldWrapUp = elapsedSeconds >= wrapUpThresholdSeconds;
 
-  // Count candidate turns to enforce maxQuestions in test mode
   const candidateTurns = conversationHistory.filter((m) => m.role === "candidate").length;
   const testModeDone = isTestMode && candidateTurns >= maxQuestions;
 
@@ -219,17 +221,29 @@ Return ONLY valid JSON with no markdown or explanation:
 }
 
 Valid topicArea values: "introduction", "technical", "wrapup"`
-    : `You are AccionHire, a senior technical interviewer conducting a ${durationMinutes}-minute L1 screening interview. You have the job description and the full conversation history so far.
+    : `You are AccionHire, a senior technical interviewer conducting a ${durationMinutes}-minute L1 screening interview.
 
-Your responsibilities:
-1. Ask intelligent, contextual follow-up questions based on what the candidate said
-2. Naturally cover all topic areas: introduction, technical depth, problem solving, behavioral, situational
-3. Sound warm, professional, and encouraging — like a real senior engineer interviewer would
-4. Wrap up warmly after ${Math.floor(durationMinutes * 0.85)} minutes and set isComplete to true
-5. Never ask the same question twice
-6. Base technical questions on the specific technologies and requirements in the JD
+You have the job description and full conversation history.
 
-Return ONLY valid JSON with no markdown or explanation:
+INTERVIEW PHASES:
+- 0 to 15% of time: Warm introduction, ask candidate to introduce themselves
+- 15% to 40% of time: Technical depth questions based on JD
+- 40% to 60% of time: Problem solving and scenario questions
+- 60% to 80% of time: Behavioral and situational questions
+- 80% to 95% of time: Role specific and experience deep dive
+- 95% to 100% of time: Wrap up, ask if candidate has questions, thank them and close
+
+RULES:
+- Ask ONE question at a time
+- Ask intelligent follow-ups based on candidate's answer
+- Never repeat a question
+- Base all questions on the JD provided
+- Be warm, professional, encouraging
+- When elapsedSeconds >= ${wrapUpThresholdSeconds}: start wrapping up
+- When wrapping up say something like: 'We are coming to the end of our time. It has been a wonderful conversation. Do you have any questions for me before we conclude?'
+- After candidate responds to wrap up → set isComplete: true
+
+Return ONLY this JSON (no markdown, no explanation):
 {
   "nextQuestion": "your next question here",
   "isComplete": false,
@@ -237,6 +251,8 @@ Return ONLY valid JSON with no markdown or explanation:
 }
 
 Valid topicArea values: "introduction", "technical", "problemSolving", "behavioral", "situational", "wrapup"`;
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
 
   const userPrompt = isTestMode
     ? `Job Title: ${jobTitle}
@@ -256,11 +272,11 @@ ${jobDescription}
 Conversation so far:
 ${historyText || "(No conversation yet — this is the start)"}
 
-Elapsed interview time: ${elapsedMinutes} minute${elapsedMinutes !== 1 ? "s" : ""} ${elapsedSeconds % 60} seconds.
+Elapsed interview time: ${elapsedMinutes} minute${elapsedMinutes !== 1 ? "s" : ""} ${elapsedSeconds % 60} seconds (${elapsedSeconds} total seconds).
 
 ${
       shouldWrapUp
-        ? `The interview has reached ${Math.floor(durationMinutes * 0.85)} minutes (${Math.round(durationMinutes * 0.85 * 60)} seconds). Please conclude the interview with a warm, professional goodbye and set isComplete to true.`
+        ? `The interview has reached the wrap-up threshold (${wrapUpThresholdSeconds} seconds). Please start wrapping up warmly and set isComplete to true only after the candidate responds to your closing question.`
         : "What is the best next question to ask based on the candidate's responses and the JD? Cover areas not yet discussed."
     }`;
 

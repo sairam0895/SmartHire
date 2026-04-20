@@ -19,8 +19,8 @@
   --color-popover-foreground: hsl(var(--popover-foreground));
   --color-popover-border: hsl(var(--popover-border));
 
-  --color-primary: hsl(var(--primary));
-  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
   --color-primary-border: var(--primary-border);
 
   --color-secondary: hsl(var(--secondary));
@@ -73,7 +73,7 @@
 
   --border: 214.3 31.8% 91.4%;
   --input: 214.3 31.8% 91.4%;
-  --ring: 349 100% 45%; /* accion-red ring */
+  --ring: 239 84% 67%;
 
   --card: 0 0% 100%;
   --card-foreground: 222.2 84% 4.9%;
@@ -83,9 +83,9 @@
   --popover-foreground: 222.2 84% 4.9%;
   --popover-border: 214.3 31.8% 91.4%;
 
-  /* Dark Gray Primary - AccionHire */
-  --primary: 0 0% 24%; /* #3D3D3D */
-  --primary-foreground: 0 0% 100%;
+  /* Brand Indigo Primary - AccionHire */
+  --primary: #6366F1;
+  --primary-foreground: #ffffff;
 
   /* Secondary */
   --secondary: 210 40% 96.1%;
@@ -95,8 +95,8 @@
   --muted: 210 40% 96.1%;
   --muted-foreground: 215.4 16.3% 46.9%;
 
-  /* Accent - Accion Red */
-  --accent: 349 100% 45%; /* #E5002B */
+  /* Accent - Indigo */
+  --accent: 239 84% 67%; /* #6366F1 */
   --accent-foreground: 0 0% 100%;
 
   /* Destructive */
@@ -107,11 +107,11 @@
   --sidebar: 0 0% 24%;
   --sidebar-foreground: 0 0% 100%;
   --sidebar-border: 0 0% 20%;
-  --sidebar-primary: 349 100% 45%;
+  --sidebar-primary: 239 84% 67%;
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-accent: 0 0% 20%;
   --sidebar-accent-foreground: 0 0% 100%;
-  --sidebar-ring: 349 100% 45%;
+  --sidebar-ring: 239 84% 67%;
 
   --app-font-sans: 'Inter', sans-serif;
   --app-font-serif: Georgia, serif;
@@ -120,7 +120,7 @@
   
   --sidebar-primary-border: hsl(var(--sidebar-primary));
   --sidebar-accent-border: hsl(var(--sidebar-accent));
-  --primary-border: hsl(var(--primary));
+  --primary-border: var(--primary);
   --secondary-border: hsl(var(--secondary));
   --muted-border: hsl(var(--muted));
   --accent-border: hsl(var(--accent));
@@ -143,8 +143,8 @@
   --popover-foreground: 210 40% 98%;
   --popover-border: 217.2 32.6% 17.5%;
 
-  --primary: 210 40% 98%;
-  --primary-foreground: 222.2 47.4% 11.2%;
+  --primary: hsl(210 40% 98%);
+  --primary-foreground: hsl(222.2 47.4% 11.2%);
 
   --secondary: 217.2 32.6% 17.5%;
   --secondary-foreground: 210 40% 98%;
@@ -152,7 +152,7 @@
   --muted: 217.2 32.6% 17.5%;
   --muted-foreground: 215 20.2% 65.1%;
 
-  --accent: 349 100% 45%;
+  --accent: 239 84% 67%;
   --accent-foreground: 0 0% 100%;
 
   --destructive: 0 62.8% 30.6%;
