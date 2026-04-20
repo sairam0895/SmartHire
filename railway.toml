@@ -3,3 +3,5 @@ buildCommand = "npm install -g pnpm && pnpm install --no-frozen-lockfile && cd a
 
 [deploy]
 startCommand = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
+
+frozen-lockfile=false
