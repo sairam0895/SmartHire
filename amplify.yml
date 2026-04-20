@@ -1,0 +1,20 @@
+version: 1
+applications:
+  - frontend:
+      phases:
+        preBuild:
+          commands:
+            - npm install -g pnpm
+            - pnpm install
+        build:
+          commands:
+            - cd artifacts/smarthire
+            - pnpm run build
+      artifacts:
+        baseDirectory: artifacts/smarthire/dist/public
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
+    appRoot: .

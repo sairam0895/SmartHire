@@ -25,7 +25,15 @@ app.use(
     },
   }),
 );
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    /\.amplifyapp\.com$/,
+    /\.elasticbeanstalk\.com$/,
+    process.env.FRONTEND_URL ?? '',
+  ].filter(Boolean) as (string | RegExp)[],
+  credentials: true,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

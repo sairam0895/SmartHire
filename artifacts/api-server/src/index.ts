@@ -4,17 +4,11 @@ import { logger } from "./lib/logger";
 import { startBotServer } from "./bot/botServer";
 
 const rawPort = process.env["PORT"];
-
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
-
-const port = Number(rawPort);
+let port = Number(rawPort ?? 8080);
 
 if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
+  logger.warn('Invalid PORT env var, defaulting to 8080');
+  port = 8080;
 }
 
 app.listen(port, (err) => {
