@@ -102,6 +102,7 @@ async function buildAll() {
       "electron",
       "pdfkit",
       "botbuilder",
+      "@slack/bolt",
       "restify",
       "openai",
       "zod",

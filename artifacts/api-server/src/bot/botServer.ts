@@ -1,6 +1,5 @@
 import express from "express";
 import { SmartHireBot, createBotAdapter } from "./smartHireBot";
-import { createSlackApp } from "./slackBot";
 import { logger } from "../lib/logger";
 
 export async function startBotServer(): Promise<void> {
@@ -35,11 +34,12 @@ export async function startBotServer(): Promise<void> {
   // ── Slack Bot ──────────────────────────────────────────────────────────
   if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     try {
-      const slackApp = createSlackApp();
-      await slackApp.start();
-      logger.info("AccionHire Slack bot connected");
+      const { createSlackApp } = await import('./slackBot.js')
+      const slackApp = createSlackApp()
+      await slackApp.start()
+      logger.info('AccionHire Slack bot connected')
     } catch (err) {
-      logger.error({ err }, "Failed to start Slack bot");
+      logger.warn({ err }, 'Slack bot failed to start — skipping')
     }
   } else {
     logger.info("Slack credentials not configured — skipping Slack bot");
