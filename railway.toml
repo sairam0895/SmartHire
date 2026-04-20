@@ -4,5 +4,4 @@ buildCommand = "pnpm install --no-frozen-lockfile && cd artifacts/api-server && 
 
 [deploy]
 startCommand = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
-healthcheckPath = "/api/healthz"
 restartPolicyType = "on_failure"
