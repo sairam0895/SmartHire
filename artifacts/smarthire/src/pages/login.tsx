@@ -5,23 +5,13 @@ import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Eye, EyeOff, Loader2, CheckCircle2 } from "lucide-react";
+import { Logo } from "../components/Logo";
 
 interface LoginResponse {
   token: string;
   user: { id: number; email: string; name: string; role: string };
 }
 
-const AccionHireLogoWhite = () => (
-  <div className="flex items-center gap-3 mb-8">
-    <svg width="44" height="48" viewBox="0 0 40 44" fill="none">
-      <polygon points="20,0 40,44 20,44" fill="white" opacity="0.9"/>
-      <polygon points="20,0 0,44 20,44" fill="white" opacity="0.6"/>
-    </svg>
-    <span style={{ fontSize: 28, fontWeight: 700, color: 'white', letterSpacing: '-0.5px' }}>
-      AccionHire
-    </span>
-  </div>
-)
 
 export default function LoginPage() {
   const [, navigate] = useLocation();
@@ -76,7 +66,7 @@ export default function LoginPage() {
         style={{ background: "#0F172A" }}
       >
         <div>
-          <AccionHireLogoWhite />
+          <div className="mb-8"><Logo variant="light" size={40} /></div>
         </div>
 
         <div className="space-y-6">
@@ -102,8 +92,8 @@ export default function LoginPage() {
       <div className="flex flex-1 items-center justify-center p-6 bg-background">
         <div className="w-full max-w-md space-y-8">
           {/* Logo (mobile only) */}
-          <div className="lg:hidden">
-            <img src="/accionhire-logo.png" alt="AccionHire" className="h-16 w-auto mb-6" />
+          <div className="lg:hidden mb-6">
+            <Logo variant="dark" size={32} />
           </div>
 
           <div>

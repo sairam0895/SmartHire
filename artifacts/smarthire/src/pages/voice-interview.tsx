@@ -50,6 +50,7 @@ const GREETING =
   "Please take your time, there is absolutely no rush.";
 
 import { apiUrl } from "@/lib/api";
+import { Logo } from "../components/Logo";
 const API_BASE = `${apiUrl}/api`;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -765,7 +766,7 @@ export default function VoiceInterview() {
       {phase === "permissions" && !hasConsented && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
           <div className="bg-gray-900 rounded-2xl p-8 max-w-md w-full">
-            <img src="/accionhire-logo.png" className="h-10 w-auto mb-6" alt="AccionHire" />
+            <div className="mb-6"><Logo variant="light" size={32} /></div>
             <h2 className="text-white text-2xl font-bold mb-2">Before We Begin</h2>
             <p className="text-gray-400 mb-6">This interview will be:</p>
             <ul className="space-y-3 mb-8">
@@ -905,7 +906,7 @@ export default function VoiceInterview() {
 
             {/* Centre label */}
             <div className="bg-black/70 backdrop-blur-md rounded-full px-4 py-1.5 border border-white/10">
-              <img src="/accionhire-logo.png" alt="AccionHire" className="h-6 w-auto" />
+              <Logo variant="light" size={20} />
             </div>
 
             {/* Elapsed timer */}
@@ -946,15 +947,8 @@ export default function VoiceInterview() {
 
               {/* Info */}
               <div>
-                <div className="flex items-center gap-1 mb-0.5">
-                  <svg width="16" height="18" viewBox="0 0 40 44" fill="none">
-                    <polygon points="20,0 40,44 20,44" fill="#6366F1"/>
-                    <polygon points="20,0 0,44 20,44" fill="#555555"/>
-                  </svg>
-                  <span style={{ fontSize: 13, fontWeight: 700 }}>
-                    <span style={{ color: '#6366F1' }}>Accion</span>
-                    <span style={{ color: '#555555' }}>Hire</span>
-                  </span>
+                <div className="mb-0.5">
+                  <Logo variant="light" size={20} />
                 </div>
                 <p className="text-gray-400 text-xs">
                   {phase === "greeting" || phase === "speaking"

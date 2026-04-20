@@ -4,20 +4,7 @@ import { LogOut } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-
-const AccionHireLogo = ({ size = 32 }: { size?: number }) => (
-  <div className="flex items-center gap-2 cursor-pointer"
-    onClick={() => window.location.href = '/'}>
-    <svg width={size} height={size} viewBox="0 0 40 44" fill="none">
-      <polygon points="20,0 40,44 20,44" fill="#6366F1"/>
-      <polygon points="20,0 0,44 20,44" fill="#555555"/>
-    </svg>
-    <span style={{ fontSize: size * 0.55, fontWeight: 700, letterSpacing: '-0.5px' }}>
-      <span style={{ color: '#6366F1' }}>Accion</span>
-      <span style={{ color: '#555555' }}>Hire</span>
-    </span>
-  </div>
-)
+import { Logo } from "./Logo";
 
 function UserAvatar({ name }: { name: string }) {
   const initials = name
@@ -41,7 +28,7 @@ export function Navbar() {
   return (
     <nav className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container mx-auto flex h-14 items-center px-4">
-        <AccionHireLogo size={32} />
+        <Logo variant="dark" size={32} />
 
         <div className="flex flex-1 items-center justify-end space-x-4">
           {user ? (
