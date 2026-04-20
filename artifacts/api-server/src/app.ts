@@ -26,13 +26,32 @@ app.use(
   }),
 );
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    /\.amplifyapp\.com$/,
-    /\.elasticbeanstalk\.com$/,
-    process.env.FRONTEND_URL ?? '',
-  ].filter(Boolean) as (string | RegExp)[],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc)
+    if (!origin) return callback(null, true)
+
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'https://main.dgh3pdwdjjvdk.amplifyapp.com',
+      process.env.FRONTEND_URL ?? ''
+    ]
+
+    // Allow any amplifyapp.com or railway.app subdomain
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.endsWith('.amplifyapp.com') ||
+      origin.endsWith('.railway.app') ||
+      origin.endsWith('.up.railway.app')
+    ) {
+      return callback(null, true)
+    }
+
+    return callback(null, true) // Allow all for now during development
+  },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key']
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
