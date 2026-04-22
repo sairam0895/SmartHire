@@ -5,8 +5,6 @@ import { format } from "date-fns";
 import {
   Plus,
   Users,
-  CheckCircle2,
-  Clock,
   BarChart,
   ChevronRight,
   Loader2,
@@ -17,6 +15,7 @@ import {
   Cpu,
   RefreshCw,
   Calendar,
+  MoreVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -30,13 +29,35 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { AppLayout } from "@/components/layout";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
 
 const PAGE_SIZE = 10;
 
-type FilterOption = "all" | "web" | "bot" | "pending" | "completed";
+type FilterOption = "all" | "web" | "bot" | "pending" | "completed" | "cancelled";
 
 interface Interview {
   id: number;
@@ -50,6 +71,8 @@ interface Interview {
   createdAt: string;
   completedAt: string | null;
   scheduledAt: string | null;
+  candidateToken: string | null;
+  durationMinutes: number | null;
 }
 
 interface InterviewStats {
@@ -69,11 +92,22 @@ export default function Dashboard() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const { user, isAdmin } = useAuth();
+  const { toast } = useToast();
   const [filter, setFilter] = useState<FilterOption>("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Build query key that includes user role so cache is per-role
+  // Reschedule modal
+  const [rescheduleTarget, setRescheduleTarget] = useState<Interview | null>(null);
+  const [rescheduleDate, setRescheduleDate] = useState("");
+  const [rescheduleTime, setRescheduleTime] = useState("");
+  const [rescheduleDuration, setRescheduleDuration] = useState(30);
+  const [isRescheduling, setIsRescheduling] = useState(false);
+
+  // Cancel confirmation
+  const [cancelTarget, setCancelTarget] = useState<Interview | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
+
   const interviewsKey = ["interviews", isAdmin ? "all" : user?.email ?? ""];
   const statsKey = ["interviews-stats"];
 
@@ -109,6 +143,7 @@ export default function Dashboard() {
       case "bot":       list = list.filter((i) => i.source === "bot"); break;
       case "pending":   list = list.filter((i) => i.status === "pending" || i.status === "evaluating"); break;
       case "completed": list = list.filter((i) => i.status === "completed"); break;
+      case "cancelled": list = list.filter((i) => i.status === "cancelled"); break;
     }
 
     return list.sort((a, b) => {
@@ -146,9 +181,17 @@ export default function Dashboard() {
     { key: "bot", label: "Teams Bot" },
     { key: "pending", label: "Pending" },
     { key: "completed", label: "Completed" },
+    { key: "cancelled", label: "Cancelled" },
   ];
 
   const getStatusBadge = (status: string, scheduledAt: string | null | undefined) => {
+    if (status === "cancelled") {
+      return (
+        <Badge variant="secondary" style={{ backgroundColor: "#FEE2E2", color: "#DC2626" }}>
+          Cancelled
+        </Badge>
+      );
+    }
     if (scheduledAt && status !== "completed") {
       return (
         <Badge variant="secondary" className="bg-blue-100 text-blue-800 hover:bg-blue-100 gap-1">
@@ -208,11 +251,68 @@ export default function Dashboard() {
     return <span className="text-muted-foreground text-sm">—</span>;
   };
 
-  const handleRowClick = (interview: { id: number; status: string }) => {
+  const handleRowClick = (interview: Interview) => {
     if (interview.status === "completed") {
       navigate(`/scorecard/${interview.id}`);
+    } else if (interview.status === "cancelled") {
+      toast({ title: "Interview cancelled", description: "This interview has been cancelled and cannot be accessed." });
     } else {
-      navigate(`/voice-interview/${interview.id}`);
+      navigate(`/interview/${interview.candidateToken ?? interview.id}`);
+    }
+  };
+
+  const openReschedule = (e: React.MouseEvent, interview: Interview) => {
+    e.stopPropagation();
+    const d = interview.scheduledAt ? new Date(interview.scheduledAt) : null;
+    setRescheduleDate(d ? format(d, "yyyy-MM-dd") : "");
+    setRescheduleTime(d ? format(d, "HH:mm") : "");
+    setRescheduleDuration(interview.durationMinutes ?? 30);
+    setRescheduleTarget(interview);
+  };
+
+  const openCancel = (e: React.MouseEvent, interview: Interview) => {
+    e.stopPropagation();
+    setCancelTarget(interview);
+  };
+
+  const handleReschedule = async () => {
+    if (!rescheduleTarget) return;
+    setIsRescheduling(true);
+    try {
+      const scheduledAt =
+        rescheduleDate && rescheduleTime
+          ? new Date(`${rescheduleDate}T${rescheduleTime}:00`).toISOString()
+          : null;
+      const res = await apiFetch(`/api/interviews/${rescheduleTarget.id}/reschedule`, {
+        method: "PATCH",
+        body: JSON.stringify({ scheduledAt, durationMinutes: rescheduleDuration }),
+      });
+      if (!res.ok) throw new Error("Failed to reschedule");
+      await queryClient.invalidateQueries({ queryKey: interviewsKey });
+      toast({ title: "Interview rescheduled", description: "The schedule has been updated." });
+      setRescheduleTarget(null);
+    } catch {
+      toast({ variant: "destructive", title: "Failed to reschedule interview" });
+    } finally {
+      setIsRescheduling(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!cancelTarget) return;
+    setIsCancelling(true);
+    try {
+      const res = await apiFetch(`/api/interviews/${cancelTarget.id}/cancel`, {
+        method: "PATCH",
+      });
+      if (!res.ok) throw new Error("Failed to cancel");
+      await queryClient.invalidateQueries({ queryKey: interviewsKey });
+      toast({ title: "Interview cancelled", description: "The interview has been cancelled." });
+      setCancelTarget(null);
+    } catch {
+      toast({ variant: "destructive", title: "Failed to cancel interview" });
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -254,7 +354,7 @@ export default function Dashboard() {
               <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
               Refresh
             </Button>
-            <Button onClick={() => navigate("/create")} className="gap-2 text-white" style={{ backgroundColor: '#6366F1' }} data-testid="button-new-interview">
+            <Button onClick={() => navigate("/create")} className="gap-2 text-white" style={{ backgroundColor: "#6366F1" }} data-testid="button-new-interview">
               <Plus className="h-4 w-4" />
               New Interview
             </Button>
@@ -283,7 +383,7 @@ export default function Dashboard() {
             <CardContent>
               {statsLoading ? <Skeleton className="h-7 w-16" /> : (
                 <div className="text-2xl font-bold" data-testid="stat-average-score">
-                  {stats?.averageScore ? stats.averageScore.toFixed(1) : '-'}
+                  {stats?.averageScore ? stats.averageScore.toFixed(1) : "-"}
                   <span className="text-sm font-normal text-muted-foreground ml-1">/ 10</span>
                 </div>
               )}
@@ -334,7 +434,7 @@ export default function Dashboard() {
                     variant={filter === btn.key ? "default" : "outline"}
                     size="sm"
                     className={`text-xs ${filter === btn.key ? "text-white" : ""}`}
-                    style={filter === btn.key ? { backgroundColor: '#6366F1' } : undefined}
+                    style={filter === btn.key ? { backgroundColor: "#6366F1" } : undefined}
                     onClick={() => handleFilterChange(btn.key)}
                   >
                     {btn.label}
@@ -375,6 +475,7 @@ export default function Dashboard() {
                         <TableHead>Status</TableHead>
                         <TableHead className="text-right">Score</TableHead>
                         <TableHead className="w-[50px]"></TableHead>
+                        <TableHead className="w-[40px]"></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -389,7 +490,7 @@ export default function Dashboard() {
                           <TableCell>{interview.jobTitle}</TableCell>
                           <TableCell className="text-muted-foreground whitespace-nowrap">
                             {interview.scheduledAt ? (
-                              <span className="font-medium" style={{ color: '#6366F1' }}>
+                              <span className="font-medium" style={{ color: "#6366F1" }}>
                                 {format(new Date(interview.scheduledAt), "MMM d, yyyy h:mm a")}
                               </span>
                             ) : (
@@ -404,11 +505,33 @@ export default function Dashboard() {
                           <TableCell>{getStatusBadge(interview.status, interview.scheduledAt)}</TableCell>
                           <TableCell className="text-right">
                             <span className={getScoreColorClass(interview.overallScore)}>
-                              {interview.overallScore ? interview.overallScore.toFixed(1) : '-'}
+                              {interview.overallScore ? interview.overallScore.toFixed(1) : "-"}
                             </span>
                           </TableCell>
                           <TableCell>
                             <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                          </TableCell>
+                          <TableCell onClick={(e) => e.stopPropagation()}>
+                            {interview.status !== "completed" && interview.status !== "cancelled" && (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="ghost" size="icon" className="h-7 w-7">
+                                    <MoreVertical className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={(e) => openReschedule(e, interview)}>
+                                    Reschedule
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    className="text-red-600 focus:text-red-600"
+                                    onClick={(e) => openCancel(e, interview)}
+                                  >
+                                    Cancel
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -441,7 +564,7 @@ export default function Dashboard() {
                             size="sm"
                             onClick={() => setCurrentPage(p as number)}
                             className={`text-xs w-8 ${currentPage === p ? "text-white" : ""}`}
-                            style={currentPage === p ? { backgroundColor: '#6366F1' } : undefined}
+                            style={currentPage === p ? { backgroundColor: "#6366F1" } : undefined}
                           >
                             {p}
                           </Button>
@@ -469,6 +592,86 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Reschedule Modal */}
+      <Dialog open={!!rescheduleTarget} onOpenChange={(open) => { if (!open) setRescheduleTarget(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reschedule Interview</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              {rescheduleTarget?.candidateName} — {rescheduleTarget?.jobTitle}
+            </p>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Date</label>
+              <Input
+                type="date"
+                value={rescheduleDate}
+                onChange={(e) => setRescheduleDate(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Time</label>
+              <Input
+                type="time"
+                value={rescheduleTime}
+                onChange={(e) => setRescheduleTime(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Duration</label>
+              <Select
+                value={String(rescheduleDuration)}
+                onValueChange={(v) => setRescheduleDuration(Number(v))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="15">15 minutes</SelectItem>
+                  <SelectItem value="30">30 minutes</SelectItem>
+                  <SelectItem value="45">45 minutes</SelectItem>
+                  <SelectItem value="60">60 minutes</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRescheduleTarget(null)}>Cancel</Button>
+            <Button
+              onClick={handleReschedule}
+              disabled={isRescheduling}
+              className="text-white"
+              style={{ backgroundColor: "#6366F1" }}
+            >
+              {isRescheduling ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Saving...</> : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel Confirmation */}
+      <Dialog open={!!cancelTarget} onOpenChange={(open) => { if (!open) setCancelTarget(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel Interview</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground py-2">
+            Are you sure you want to cancel the interview for <strong>{cancelTarget?.candidateName}</strong>? This action cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelTarget(null)}>Go Back</Button>
+            <Button
+              variant="destructive"
+              onClick={handleCancel}
+              disabled={isCancelling}
+            >
+              {isCancelling ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Cancelling...</> : "Cancel Interview"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AppLayout>
   );
 }

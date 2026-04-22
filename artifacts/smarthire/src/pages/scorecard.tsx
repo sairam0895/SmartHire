@@ -328,9 +328,8 @@ export default function ScorecardPage() {
 
         {/* Transcript */}
         <div className="bg-white rounded-xl shadow-sm border overflow-hidden print:shadow-none print:border">
-          <div className="bg-slate-50 border-b px-6 py-4 flex items-center justify-between">
+          <div className="bg-slate-50 border-b px-6 py-4">
             <h2 className="text-lg font-bold text-slate-900">Full Interview Transcript</h2>
-            <Badge variant="secondary" className="font-mono">{questions.length} Questions</Badge>
           </div>
 
           <div className="divide-y divide-slate-100">
@@ -340,10 +339,11 @@ export default function ScorecardPage() {
 
               return (
                 <div key={q.id} className="p-6 md:p-8 hover:bg-slate-50/50 transition-colors break-inside-avoid">
+                  {/* Interviewer question */}
                   <div className="flex items-start justify-between gap-4 mb-4">
-                    <div className="flex gap-3">
-                      <span className="flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-full bg-slate-100 text-slate-600 font-bold text-sm">
-                        {q.questionIndex + 1}
+                    <div className="flex items-start gap-3">
+                      <span className="flex-shrink-0 mt-1 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded whitespace-nowrap">
+                        Interviewer
                       </span>
                       <div>
                         <div className="flex items-center gap-2 mb-2">
@@ -363,21 +363,28 @@ export default function ScorecardPage() {
                     )}
                   </div>
 
-                  <div className="pl-11 space-y-4">
-                    <div className="bg-slate-50 rounded-lg p-5 border border-slate-100">
-                      <p className="text-slate-700 whitespace-pre-wrap font-serif leading-relaxed">
-                        {answer?.answerText || <span className="text-slate-400 italic">No answer provided</span>}
-                      </p>
-                    </div>
-
-                    {answer?.feedback && (
-                      <div className="pl-4 border-l-2 border-accent/40 py-1">
-                        <p className="text-sm text-slate-600">
-                          <span className="font-semibold text-slate-800 mr-2">AI Evaluation:</span>
-                          {answer.feedback}
-                        </p>
+                  {/* Candidate answer */}
+                  <div className="space-y-3">
+                    <div className="flex items-start gap-3">
+                      <span className="flex-shrink-0 mt-1 px-2 py-0.5 bg-slate-100 text-slate-600 text-xs font-semibold rounded whitespace-nowrap">
+                        Candidate
+                      </span>
+                      <div className="flex-1">
+                        <div className="bg-slate-50 rounded-lg p-4 border border-slate-100">
+                          <p className="text-slate-700 whitespace-pre-wrap font-serif leading-relaxed">
+                            {answer?.answerText || <span className="text-slate-400 italic">No answer provided</span>}
+                          </p>
+                        </div>
+                        {answer?.feedback && (
+                          <div className="pl-4 border-l-2 border-accent/40 py-1 mt-2">
+                            <p className="text-sm text-slate-600">
+                              <span className="font-semibold text-slate-800 mr-2">AI Evaluation:</span>
+                              {answer.feedback}
+                            </p>
+                          </div>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
               );

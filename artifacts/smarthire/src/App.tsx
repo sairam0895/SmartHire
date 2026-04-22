@@ -38,7 +38,7 @@ function Router() {
       <Route path="/login" component={LoginPage} />
       <Route path="/" component={() => <ProtectedRoute component={Dashboard} />} />
       <Route path="/create" component={() => <ProtectedRoute component={CreateInterview} />} />
-      <Route path="/interview/:id" component={InterviewPage} />
+      <Route path="/interview/:token" component={VoiceInterview} />
       <Route path="/voice-interview/:id" component={VoiceInterview} />
       <Route path="/scorecard/:id" component={() => <ProtectedRoute component={ScorecardPage} />} />
       <Route component={NotFound} />

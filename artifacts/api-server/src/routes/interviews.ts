@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, desc, avg, count, ilike, or } from "drizzle-orm";
+import { eq, and, desc, avg, count, or, sql } from "drizzle-orm";
 import { db, interviewsTable, questionsTable, answersTable, scorecardsTable } from "@workspace/db";
 import {
   CreateInterviewBody,
@@ -12,6 +12,7 @@ import { uploadRecording, getSignedUrl, generateRecordingKey, s3Enabled } from "
 import { requireAuth } from "../middlewares/requireAuth";
 import { z } from "zod";
 import multer from "multer";
+import { randomUUID } from "crypto";
 
 const router: IRouter = Router();
 
@@ -33,14 +34,13 @@ router.get("/interviews/stats", requireAuth, async (req, res): Promise<void> => 
     .from(interviewsTable)
     .where(eq(interviewsTable.status, "completed"));
 
-  // Use ILIKE for flexible verdict matching
   const strongHireCount = await db
     .select({ count: count() })
     .from(interviewsTable)
     .where(
       and(
         eq(interviewsTable.status, "completed"),
-        ilike(interviewsTable.verdict, "%strong hire%")
+        sql`lower(${interviewsTable.verdict}) like '%strong hire%'`
       )
     );
 
@@ -51,8 +51,8 @@ router.get("/interviews/stats", requireAuth, async (req, res): Promise<void> => 
       and(
         eq(interviewsTable.status, "completed"),
         or(
-          ilike(interviewsTable.verdict, "hire"),
-          ilike(interviewsTable.verdict, "% hire")
+          sql`lower(${interviewsTable.verdict}) = 'hire'`,
+          sql`lower(${interviewsTable.verdict}) like '% hire'`
         )
       )
     );
@@ -63,7 +63,7 @@ router.get("/interviews/stats", requireAuth, async (req, res): Promise<void> => 
     .where(
       and(
         eq(interviewsTable.status, "completed"),
-        ilike(interviewsTable.verdict, "%maybe%")
+        sql`lower(${interviewsTable.verdict}) like '%maybe%'`
       )
     );
 
@@ -74,9 +74,9 @@ router.get("/interviews/stats", requireAuth, async (req, res): Promise<void> => 
       and(
         eq(interviewsTable.status, "completed"),
         or(
-          ilike(interviewsTable.verdict, "%no hire%"),
-          ilike(interviewsTable.verdict, "%reject%"),
-          ilike(interviewsTable.verdict, "%do not hire%")
+          sql`lower(${interviewsTable.verdict}) like '%no hire%'`,
+          sql`lower(${interviewsTable.verdict}) like '%reject%'`,
+          sql`lower(${interviewsTable.verdict}) like '%do not hire%'`
         )
       )
     );
@@ -102,11 +102,10 @@ router.get("/interviews", requireAuth, async (req, res): Promise<void> => {
 
   let interviews;
   if (emailFilter && req.user?.role !== "admin") {
-    // Recruiter: filter by recruiterName (email passed from frontend)
     interviews = await db
       .select()
       .from(interviewsTable)
-      .where(ilike(interviewsTable.recruiterName, `%${emailFilter}%`))
+      .where(sql`lower(${interviewsTable.recruiterName}) like ${`%${emailFilter.toLowerCase()}%`}`)
       .orderBy(desc(interviewsTable.createdAt));
   } else {
     interviews = await db
@@ -125,7 +124,7 @@ router.get("/interviews", requireAuth, async (req, res): Promise<void> => {
   res.json(mapped);
 });
 
-// ─── Create interview (no question generation) ────────────────────────────────
+// ─── Create interview ─────────────────────────────────────────────────────────
 
 router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
   const parsed = CreateInterviewBody.safeParse(req.body);
@@ -135,6 +134,8 @@ router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
   }
 
   const { recruiterName, candidateName, candidateEmail, jobTitle, jobDescription, scheduledAt, durationMinutes, timezone } = parsed.data;
+
+  const candidateToken = randomUUID() + randomUUID();
 
   const [interview] = await db
     .insert(interviewsTable)
@@ -149,6 +150,7 @@ router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
       scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
       durationMinutes: durationMinutes ?? null,
       timezone: timezone ?? null,
+      candidateToken,
     })
     .returning();
 
@@ -163,11 +165,43 @@ router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
     createdAt: interview.createdAt.toISOString(),
     completedAt: null,
     scheduledAt: interview.scheduledAt ? interview.scheduledAt.toISOString() : null,
+    candidateToken,
   });
 });
 
-// ─── Get single interview ─────────────────────────────────────────────────────
-// Public — no auth required (candidate access)
+// ─── Get interview by candidate token (public) ────────────────────────────────
+
+router.get("/interviews/token/:token", async (req, res): Promise<void> => {
+  const token = req.params.token;
+  if (!token) {
+    res.status(400).json({ error: "Missing token" });
+    return;
+  }
+
+  const [interview] = await db
+    .select()
+    .from(interviewsTable)
+    .where(eq(interviewsTable.candidateToken, token));
+
+  if (!interview) {
+    res.status(404).json({ error: "Interview not found" });
+    return;
+  }
+
+  if (interview.status === "cancelled") {
+    res.json({ status: "cancelled" });
+    return;
+  }
+
+  res.json({
+    ...interview,
+    createdAt: interview.createdAt.toISOString(),
+    completedAt: interview.completedAt ? interview.completedAt.toISOString() : null,
+    scheduledAt: interview.scheduledAt ? interview.scheduledAt.toISOString() : null,
+  });
+});
+
+// ─── Get single interview (public) ───────────────────────────────────────────
 
 router.get("/interviews/:id", async (req, res): Promise<void> => {
   const params = GetInterviewParams.safeParse(req.params);
@@ -202,7 +236,6 @@ router.get("/interviews/:id", async (req, res): Promise<void> => {
 });
 
 // ─── Submit interview ─────────────────────────────────────────────────────────
-// Public — no auth required (candidate submits from voice interview page)
 
 const SubmitAnswerInputExtended = z.object({
   questionIndex: z.number().int(),
@@ -220,6 +253,7 @@ const SubmitBodyExtended = z.object({
     role: z.enum(["ai", "candidate"]),
     text: z.string(),
   })).optional(),
+  rejectedReason: z.string().optional(),
 });
 
 router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
@@ -245,6 +279,39 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     return;
   }
 
+  const { answers, conversationHistory: rawHistory, rejectedReason } = bodyParsed.data;
+
+  // Handle camera rejection fast path
+  if (rejectedReason) {
+    await db
+      .update(interviewsTable)
+      .set({
+        status: "completed",
+        overallScore: 0,
+        verdict: "No Hire",
+        completedAt: new Date(),
+      })
+      .where(eq(interviewsTable.id, params.data.id));
+
+    await db.insert(scorecardsTable).values({
+      interviewId: params.data.id,
+      technicalScore: 0,
+      communicationScore: 0,
+      problemSolvingScore: 0,
+      roleRelevanceScore: 0,
+      speechConfidenceScore: null,
+      overallScore: 0,
+      verdict: "No Hire",
+      strengths: [],
+      improvements: ["Interview ended due to policy violation"],
+      summary: `Auto-rejected: ${rejectedReason}`,
+      recruiterNote: `Auto-rejected: Camera violations during interview`,
+    });
+
+    res.json({ success: true, verdict: "No Hire", rejectedReason });
+    return;
+  }
+
   const questions = await db
     .select()
     .from(questionsTable)
@@ -260,9 +327,6 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
   const endTime = Date.now();
   const durationSeconds = Math.floor((endTime - startTime) / 1000);
 
-  const { answers, conversationHistory: rawHistory } = bodyParsed.data;
-
-  // Build conversation history: use what the client sent, or reconstruct from answers
   const conversationHistory = rawHistory ?? answers.flatMap((a, i) => [
     { role: "ai" as const, text: a.questionText ?? `Question ${i + 1}` },
     { role: "candidate" as const, text: a.answerText },
@@ -288,13 +352,11 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     return;
   }
 
-  // Save questions from conversation if not already present
   const questionIdMap: Record<number, number> = {};
   for (const q of questions) {
     questionIdMap[q.questionIndex] = q.id;
   }
 
-  // Insert any missing questions from the conversation
   const missingAnswers = answers.filter((a) => questionIdMap[a.questionIndex] == null);
   if (missingAnswers.length > 0) {
     const newQRows = await db
@@ -313,20 +375,22 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     }
   }
 
-  await db.insert(answersTable).values(
-    answers.map((a) => ({
-      questionId: questionIdMap[a.questionIndex] ?? (questions[0]?.id ?? 1),
-      interviewId: params.data.id,
-      questionIndex: a.questionIndex,
-      answerText: a.answerText,
-      score: null,
-      feedback: null,
-      confidenceScore: a.confidenceScore ?? null,
-      fillerWordCount: a.fillerWordCount ?? null,
-      pauseCount: a.pauseCount ?? null,
-      speechDurationSeconds: a.speechDurationSeconds ?? null,
-    }))
-  );
+  if (answers.length > 0) {
+    await db.insert(answersTable).values(
+      answers.map((a) => ({
+        questionId: questionIdMap[a.questionIndex] ?? (questions[0]?.id ?? 1),
+        interviewId: params.data.id,
+        questionIndex: a.questionIndex,
+        answerText: a.answerText,
+        score: null,
+        feedback: null,
+        confidenceScore: a.confidenceScore ?? null,
+        fillerWordCount: a.fillerWordCount ?? null,
+        pauseCount: a.pauseCount ?? null,
+        speechDurationSeconds: a.speechDurationSeconds ?? null,
+      }))
+    );
+  }
 
   const [scorecard] = await db
     .insert(scorecardsTable)
@@ -365,6 +429,89 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
   res.json({
     ...scorecard,
     createdAt: scorecard.createdAt.toISOString(),
+  });
+});
+
+// ─── Reschedule interview ─────────────────────────────────────────────────────
+
+router.patch("/interviews/:id/reschedule", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(String(req.params.id ?? ""), 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid interview id" });
+    return;
+  }
+
+  const body = z.object({
+    scheduledAt: z.string(),
+    durationMinutes: z.number().int().optional(),
+    timezone: z.string().optional(),
+  }).safeParse(req.body);
+
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [interview] = await db.select().from(interviewsTable).where(eq(interviewsTable.id, id));
+  if (!interview) {
+    res.status(404).json({ error: "Interview not found" });
+    return;
+  }
+
+  if (interview.status === "completed" || interview.status === "cancelled") {
+    res.status(400).json({ error: `Cannot reschedule a ${interview.status} interview` });
+    return;
+  }
+
+  const [updated] = await db
+    .update(interviewsTable)
+    .set({
+      scheduledAt: new Date(body.data.scheduledAt),
+      durationMinutes: body.data.durationMinutes ?? interview.durationMinutes,
+      timezone: body.data.timezone ?? interview.timezone,
+    })
+    .where(eq(interviewsTable.id, id))
+    .returning();
+
+  res.json({
+    ...updated,
+    createdAt: updated!.createdAt.toISOString(),
+    completedAt: updated!.completedAt ? updated!.completedAt.toISOString() : null,
+    scheduledAt: updated!.scheduledAt ? updated!.scheduledAt.toISOString() : null,
+  });
+});
+
+// ─── Cancel interview ─────────────────────────────────────────────────────────
+
+router.patch("/interviews/:id/cancel", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(String(req.params.id ?? ""), 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid interview id" });
+    return;
+  }
+
+  const [interview] = await db.select().from(interviewsTable).where(eq(interviewsTable.id, id));
+  if (!interview) {
+    res.status(404).json({ error: "Interview not found" });
+    return;
+  }
+
+  if (interview.status === "completed") {
+    res.status(400).json({ error: "Cannot cancel a completed interview" });
+    return;
+  }
+
+  const [updated] = await db
+    .update(interviewsTable)
+    .set({ status: "cancelled" })
+    .where(eq(interviewsTable.id, id))
+    .returning();
+
+  res.json({
+    ...updated,
+    createdAt: updated!.createdAt.toISOString(),
+    completedAt: updated!.completedAt ? updated!.completedAt.toISOString() : null,
+    scheduledAt: updated!.scheduledAt ? updated!.scheduledAt.toISOString() : null,
   });
 });
 
@@ -424,14 +571,66 @@ router.get("/interviews/:id/scorecard", requireAuth, async (req, res): Promise<v
   });
 });
 
+// ─── Whisper Transcription ────────────────────────────────────────────────────
+
+const uploadAudio = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+router.post(
+  "/transcribe",
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  uploadAudio.single("audio") as any,
+  async (req, res): Promise<void> => {
+    try {
+      const file = (req as Express.Request & { file?: Express.Multer.File }).file;
+      if (!file) {
+        res.status(400).json({ error: "No audio" });
+        return;
+      }
+
+      const blob = new Blob([file.buffer], { type: "audio/webm" });
+      const formData = new FormData();
+      formData.append("file", blob, "audio.webm");
+      formData.append("model", "whisper-large-v3");
+      formData.append("language", "en");
+      formData.append("response_format", "json");
+
+      const response = await fetch(
+        "https://api.groq.com/openai/v1/audio/transcriptions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.AI_INTEGRATIONS_OPENAI_API_KEY}`,
+          },
+          body: formData,
+        }
+      );
+
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error("Groq transcription error:", errText);
+        res.status(500).json({ error: "Transcription failed" });
+        return;
+      }
+
+      const data = (await response.json()) as { text?: string };
+      res.json({ transcript: data.text?.trim() ?? "" });
+    } catch (err) {
+      console.error("Transcribe error:", err);
+      res.status(500).json({ error: "Transcription failed" });
+    }
+  }
+);
+
 // ─── Recording Upload & Playback ─────────────────────────────────────────────
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
+  limits: { fileSize: 500 * 1024 * 1024 },
 });
 
-// Public — candidate uploads recording
 router.post(
   "/interviews/:id/upload-recording",
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -481,7 +680,6 @@ router.post(
   }
 );
 
-// Protected — recruiter fetches signed recording URL
 router.get("/interviews/:id/recording", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(String(req.params.id ?? ""), 10);
   if (isNaN(id)) {
@@ -525,7 +723,6 @@ router.get("/interviews/:id/recording", requireAuth, async (req, res): Promise<v
 });
 
 // ─── AI Interview Conversation Engine ─────────────────────────────────────────
-// Public — candidate uses this during interview
 
 const InterviewConversationBody = z.object({
   interviewId: z.number().int(),

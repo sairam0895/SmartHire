@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useParams } from "wouter";
+import { apiUrl, apiFetch } from "@/lib/api";
+import { Logo } from "../components/Logo";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Phase =
   | "loading"
-  | "waiting"       // scheduled but not yet within 10 min window
+  | "waiting"
   | "permissions"
   | "camera-starting"
   | "greeting"
@@ -14,6 +16,7 @@ type Phase =
   | "speaking"
   | "submitting"
   | "complete"
+  | "rejected"
   | "error";
 
 interface InterviewData {
@@ -26,6 +29,7 @@ interface InterviewData {
   scheduledAt: string | null;
   durationMinutes: number | null;
   timezone: string | null;
+  status?: string;
 }
 
 interface ConversationEntry {
@@ -42,15 +46,12 @@ interface ConversationApiResponse {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const GREETING =
-  "Hello and a very warm welcome! I am AccionHire, your AI interviewer for today. " +
-  "It is wonderful to meet you. Before we dive into the technical discussion, " +
-  "I would love to know more about you. Please go ahead and introduce yourself — " +
-  "tell me about your background, your overall experience, the technologies you " +
-  "have worked with, and what you consider your greatest strengths. " +
-  "Please take your time, there is absolutely no rush.";
+  "Hi there! I'm Girija, and I will be your interviewer today. It is so lovely to meet you! " +
+  "I just want you to know — this is a real conversation, not a test with right or wrong answers. " +
+  "I genuinely want to get to know you and your journey. " +
+  "So take a breath, be yourself, and let us have a wonderful chat. " +
+  "To start us off — tell me a bit about yourself and what has been the most exciting chapter of your career so far?";
 
-import { apiUrl } from "@/lib/api";
-import { Logo } from "../components/Logo";
 const API_BASE = `${apiUrl}/api`;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ function topicLabel(area: string): string {
   return labels[area] ?? area;
 }
 
-// ─── Speaking Bars Animation ──────────────────────────────────────────────────
+// ─── Speaking Bars ────────────────────────────────────────────────────────────
 
 function SpeakingBars({ color = "bg-blue-400" }: { color?: string }) {
   return (
@@ -82,11 +83,7 @@ function SpeakingBars({ color = "bg-blue-400" }: { color?: string }) {
         <div
           key={i}
           className={`w-0.5 rounded-full animate-pulse ${color}`}
-          style={{
-            height: `${6 + i * 3}px`,
-            animationDelay: `${i * 0.1}s`,
-            animationDuration: "0.6s",
-          }}
+          style={{ height: `${6 + i * 3}px`, animationDelay: `${i * 0.1}s`, animationDuration: "0.6s" }}
         />
       ))}
     </div>
@@ -96,8 +93,12 @@ function SpeakingBars({ color = "bg-blue-400" }: { color?: string }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function VoiceInterview() {
-  // ── State ─────────────────────────────────────────────────────────────────
   const [, navigate] = useLocation();
+  const params = useParams<{ id?: string; token?: string }>();
+  const urlToken = params.token ?? null;
+  const urlId = params.id ? Number(params.id) : null;
+
+  // ── State ─────────────────────────────────────────────────────────────────
   const [hasConsented, setHasConsented] = useState(false);
   const [phase, setPhase] = useState<Phase>("loading");
   const [interview, setInterview] = useState<InterviewData | null>(null);
@@ -109,23 +110,31 @@ export default function VoiceInterview() {
   const [errorMsg, setErrorMsg] = useState("");
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [waitingSecondsLeft, setWaitingSecondsLeft] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "done" | "failed">("idle");
+  const [recordingChunkCount, setRecordingChunkCount] = useState(0);
+  const [cameraOff, setCameraOff] = useState(false);
+  const [cameraWarnings, setCameraWarnings] = useState(0);
+  const [cameraCountdown, setCameraCountdown] = useState(30);
 
-  // ── Refs (avoid stale closures in async callbacks) ────────────────────────
+  // ── Refs ──────────────────────────────────────────────────────────────────
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recognitionRef = useRef<any>(null);
-  const finalTranscriptRef = useRef("");
-  const transcriptRef = useRef(""); // live display transcript ref
   const phaseRef = useRef<Phase>("loading");
   const conversationRef = useRef<ConversationEntry[]>([]);
   const elapsedSecondsRef = useRef(0);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const interviewRef = useRef<InterviewData | null>(null);
+  const interviewIdRef = useRef<number>(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
-  const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "done" | "failed">("idle");
-  const [recordingChunkCount, setRecordingChunkCount] = useState(0);
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const isRecordingRef = useRef(false);
+  const cameraCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cameraOffRef = useRef(false);
+  const cameraWarningsRef = useRef(0);
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
 
   // ── Sync helpers ──────────────────────────────────────────────────────────
   const setPhaseSync = useCallback((p: Phase) => {
@@ -139,27 +148,20 @@ export default function VoiceInterview() {
     setConversationHistory([...next]);
   }, []);
 
-  // ── Interview ID from URL ─────────────────────────────────────────────────
-  const interviewId = Number(window.location.pathname.split("/").pop());
-
   // ── Boot ──────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!interviewId || isNaN(interviewId)) {
+    if (!urlToken && (!urlId || isNaN(urlId))) {
       setErrorMsg("Invalid interview URL. Please check the link provided to you.");
       setPhaseSync("error");
       return;
     }
-    loadInterview(interviewId);
-
-    return () => {
-      cleanup();
-    };
+    loadInterview();
+    return () => cleanup();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ─── Schedule helpers ─────────────────────────────────────────────────────
 
-  /** Seconds remaining until the link activates (scheduledAt − 10 min). */
   function secondsUntilActive(scheduledAt: string): number {
     const activateMs = new Date(scheduledAt).getTime() - 10 * 60 * 1000;
     return Math.max(0, Math.floor((activateMs - Date.now()) / 1000));
@@ -182,34 +184,49 @@ export default function VoiceInterview() {
     };
   }
 
-  // ─── Waiting countdown — ticks every second, auto-advances when ready ────
+  // ─── Waiting countdown ────────────────────────────────────────────────────
   useEffect(() => {
     if (phase !== "waiting") return;
-    const interview = interviewRef.current;
-    if (!interview?.scheduledAt) return;
+    const iv = interviewRef.current;
+    if (!iv?.scheduledAt) return;
 
     const tick = () => {
-      const secs = secondsUntilActive(interview.scheduledAt!);
+      const secs = secondsUntilActive(iv.scheduledAt!);
       setWaitingSecondsLeft(secs);
       if (secs === 0) setPhaseSync("permissions");
     };
 
-    tick(); // run immediately
+    tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // ─── Load interview data ──────────────────────────────────────────────────
-  async function loadInterview(id: number) {
+  // ─── Load interview ───────────────────────────────────────────────────────
+  async function loadInterview() {
     try {
-      const res = await fetch(`${API_BASE}/livekit/interview/${id}`);
-      if (!res.ok) throw new Error("Interview not found");
-      const data = (await res.json()) as InterviewData;
+      let data: InterviewData;
+
+      if (urlToken) {
+        const res = await fetch(`${API_BASE}/interviews/token/${urlToken}`);
+        if (!res.ok) throw new Error("Interview not found");
+        const raw = (await res.json()) as InterviewData;
+        if (raw.status === "cancelled") {
+          setErrorMsg("This interview has been cancelled. Please contact your recruiter.");
+          setPhaseSync("error");
+          return;
+        }
+        data = raw;
+      } else {
+        const res = await fetch(`${API_BASE}/livekit/interview/${urlId}`);
+        if (!res.ok) throw new Error("Interview not found");
+        data = (await res.json()) as InterviewData;
+      }
+
       setInterview(data);
       interviewRef.current = data;
+      interviewIdRef.current = data.id;
 
-      // Check schedule: if scheduledAt is set and we're more than 10 min away → waiting
       if (data.scheduledAt && secondsUntilActive(data.scheduledAt) > 0) {
         setWaitingSecondsLeft(secondsUntilActive(data.scheduledAt));
         setPhaseSync("waiting");
@@ -222,10 +239,12 @@ export default function VoiceInterview() {
     }
   }
 
-  // ─── Cleanup on unmount ───────────────────────────────────────────────────
+  // ─── Cleanup ──────────────────────────────────────────────────────────────
   function cleanup() {
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
-    stopListeningInternal();
+    if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    stopAudioRecorderInternal();
     stopCameraInternal();
     window.speechSynthesis.cancel();
   }
@@ -234,7 +253,12 @@ export default function VoiceInterview() {
   async function startCamera(): Promise<boolean> {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: "user",
+          aspectRatio: { ideal: 16 / 9 },
+        },
         audio: true,
       });
       streamRef.current = stream;
@@ -243,7 +267,7 @@ export default function VoiceInterview() {
         try {
           await videoRef.current.play();
         } catch {
-          // autoplay might be blocked — the `autoPlay` attr handles it
+          // autoplay attr handles it
         }
       }
       setIsCameraReady(true);
@@ -275,9 +299,7 @@ export default function VoiceInterview() {
     }, 1000);
   }
 
-  // ─── Voice cache (populated on mount + voiceschanged) ────────────────────
-  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
-
+  // ─── Voice cache ──────────────────────────────────────────────────────────
   useEffect(() => {
     const load = () => {
       const v = window.speechSynthesis.getVoices();
@@ -290,23 +312,17 @@ export default function VoiceInterview() {
 
   function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
     if (voices.length === 0) return null;
-    // 1. Microsoft Ravi (Indian male)
     const ravi = voices.find((v) => v.name.includes("Ravi"));
     if (ravi) return ravi;
-    // 2. Microsoft Heera (Indian female)
     const heera = voices.find((v) => v.name.includes("Heera"));
     if (heera) return heera;
-    // 3. Any en-IN locale voice
     const enIN = voices.find((v) => v.lang === "en-IN" || v.lang.startsWith("en-IN"));
     if (enIN) return enIN;
-    // 4. Any voice whose name contains "indian" (case-insensitive)
     const indian = voices.find((v) => v.name.toLowerCase().includes("indian"));
     if (indian) return indian;
-    // 5. First en-US voice as fallback
     return voices.find((v) => v.lang.startsWith("en-US")) ?? null;
   }
 
-  // ─── Speech synthesis ─────────────────────────────────────────────────────
   function speak(text: string, delayMs = 0): Promise<void> {
     return new Promise<void>((resolve) => {
       window.speechSynthesis.cancel();
@@ -317,42 +333,26 @@ export default function VoiceInterview() {
         utterance.pitch = 0.95;
         utterance.volume = 1.0;
 
-        // Use cached voices; fall back to live query if cache is still empty
         const voices = voicesRef.current.length > 0
           ? voicesRef.current
           : window.speechSynthesis.getVoices();
         utterance.voice = pickVoice(voices);
 
-        // Chrome bug: speech synthesis can randomly pause
         const resumeTimer = setInterval(() => {
           if (window.speechSynthesis.paused) window.speechSynthesis.resume();
         }, 200);
 
-        utterance.onend = () => {
-          clearInterval(resumeTimer);
-          resolve();
-        };
-        utterance.onerror = () => {
-          clearInterval(resumeTimer);
-          resolve();
-        };
+        utterance.onend = () => { clearInterval(resumeTimer); resolve(); };
+        utterance.onerror = () => { clearInterval(resumeTimer); resolve(); };
 
         window.speechSynthesis.speak(utterance);
       };
 
-      const fire = () => {
-        if (delayMs > 0) {
-          setTimeout(doSpeak, delayMs);
-        } else {
-          doSpeak();
-        }
-      };
+      const fire = () => delayMs > 0 ? setTimeout(doSpeak, delayMs) : doSpeak();
 
-      // If voices already cached, speak immediately (with optional delay)
       if (voicesRef.current.length > 0) {
         fire();
       } else {
-        // Wait for voiceschanged, with a safety-net timeout
         let called = false;
         const once = () => {
           if (called) return;
@@ -367,85 +367,71 @@ export default function VoiceInterview() {
     });
   }
 
-  // ─── Speech recognition ───────────────────────────────────────────────────
-  function startListening() {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setErrorMsg("Speech recognition is not supported. Please use Chrome or Edge.");
-      setPhaseSync("error");
-      return;
-    }
+  // ─── Whisper Audio Recording ──────────────────────────────────────────────
 
-    // Reset transcript
-    finalTranscriptRef.current = "";
-    transcriptRef.current = "";
+  function stopAudioRecorderInternal() {
+    if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
+      try { audioRecorderRef.current.stop(); } catch { /* ignore */ }
+    }
+    isRecordingRef.current = false;
+  }
+
+  function startListening() {
+    if (!streamRef.current) return;
+    audioChunksRef.current = [];
+    isRecordingRef.current = true;
     setLiveTranscript("");
 
-    stopListeningInternal();
+    const audioStream = new MediaStream(streamRef.current.getAudioTracks());
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const recognition = new SpeechRecognition() as any;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-IN";
-    recognition.maxAlternatives = 1;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onresult = (event: any) => {
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          finalTranscriptRef.current += (event.results[i][0].transcript as string) + " ";
-        } else {
-          interim += event.results[i][0].transcript as string;
-        }
-      }
-      const display = (finalTranscriptRef.current + interim).trim();
-      transcriptRef.current = display;
-      setLiveTranscript(display);
+    const recorder = new MediaRecorder(audioStream, { mimeType });
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data);
     };
+    audioRecorderRef.current = recorder;
+    recorder.start(1000);
+  }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onerror = (event: any) => {
-      if ((event.error as string) !== "no-speech") {
-        console.warn("Speech recognition error:", event.error);
-      }
-    };
+  async function stopAndTranscribe(): Promise<string> {
+    if (!audioRecorderRef.current || !isRecordingRef.current) return "";
 
-    // Auto-restart if recognition stops while still listening
-    recognition.onend = () => {
-      if (phaseRef.current === "listening") {
+    isRecordingRef.current = false;
+    setLiveTranscript("Transcribing...");
+
+    return new Promise((resolve) => {
+      audioRecorderRef.current!.onstop = async () => {
         try {
-          recognition.start();
+          const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+          if (blob.size < 1000) {
+            setLiveTranscript("");
+            resolve("");
+            return;
+          }
+
+          const formData = new FormData();
+          formData.append("audio", blob, "recording.webm");
+
+          const res = await fetch(`${API_BASE}/transcribe`, {
+            method: "POST",
+            body: formData,
+          });
+          const data = (await res.json()) as { transcript?: string };
+          const transcript = data.transcript ?? "";
+          setLiveTranscript(transcript);
+          resolve(transcript);
         } catch {
-          // already running or browser blocked
+          setLiveTranscript("");
+          resolve("");
         }
-      }
-    };
-
-    recognitionRef.current = recognition;
-    try {
-      recognition.start();
-    } catch {
-      // might throw if already running
-    }
+      };
+      audioRecorderRef.current!.stop();
+    });
   }
 
-  function stopListeningInternal() {
-    if (recognitionRef.current) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (recognitionRef.current as any).onend = null; // prevent auto-restart
-        recognitionRef.current.stop();
-      } catch {
-        // ignore
-      }
-      recognitionRef.current = null;
-    }
-  }
-
-  // ─── Start MediaRecorder on the active stream ────────────────────────────
+  // ─── Video Recording ──────────────────────────────────────────────────────
   function startRecording() {
     if (!streamRef.current) return;
     recordingChunksRef.current = [];
@@ -462,15 +448,13 @@ export default function VoiceInterview() {
           setRecordingChunkCount((n) => n + 1);
         }
       };
-      recorder.start(1000); // collect a chunk every second
+      recorder.start(1000);
       mediaRecorderRef.current = recorder;
     } catch (err) {
       console.warn("[recording] MediaRecorder failed to start:", err);
     }
   }
 
-  // ─── Stop recorder and upload to S3 ──────────────────────────────────────
-  // NOTE: Call only after the recorder has already been stopped (onstop fired).
   async function uploadRecording(id: number): Promise<void> {
     const chunks = recordingChunksRef.current;
     if (chunks.length === 0) return;
@@ -479,7 +463,7 @@ export default function VoiceInterview() {
     const sizeMB = blob.size / (1024 * 1024);
 
     if (sizeMB > 500) {
-      console.warn("[recording] File too large:", sizeMB.toFixed(1), "MB — skipping upload");
+      console.warn("[recording] File too large:", sizeMB.toFixed(1), "MB — skipping");
       setUploadStatus("failed");
       return;
     }
@@ -494,11 +478,83 @@ export default function VoiceInterview() {
         method: "POST",
         body: formData,
       });
-
       setUploadStatus(res.ok ? "done" : "failed");
     } catch (err) {
       console.warn("[recording] Upload failed:", err);
       setUploadStatus("failed");
+    }
+  }
+
+  // ─── Camera Monitoring ────────────────────────────────────────────────────
+
+  function startCameraMonitoring() {
+    cameraCheckRef.current = setInterval(() => {
+      const track = streamRef.current?.getVideoTracks()[0];
+      if (!track || track.readyState === "ended" || !track.enabled) {
+        if (!cameraOffRef.current) handleCameraOff();
+      }
+    }, 2000);
+  }
+
+  function handleCameraOff() {
+    cameraOffRef.current = true;
+    setCameraOff(true);
+    window.speechSynthesis.cancel();
+
+    cameraWarningsRef.current += 1;
+    const warnings = cameraWarningsRef.current;
+    setCameraWarnings(warnings);
+
+    if (warnings >= 3) {
+      handleRejected();
+      return;
+    }
+
+    speak(
+      "I notice your camera has been turned off. Please turn it back on within 30 seconds to continue the interview."
+    );
+
+    setCameraCountdown(30);
+    countdownRef.current = setInterval(() => {
+      setCameraCountdown((p) => {
+        if (p <= 1) {
+          clearInterval(countdownRef.current!);
+          handleRejected();
+          return 0;
+        }
+        return p - 1;
+      });
+    }, 1000);
+  }
+
+  function handleCameraBack() {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track || track.readyState === "ended") return;
+    clearInterval(countdownRef.current!);
+    cameraOffRef.current = false;
+    setCameraOff(false);
+    speak("Thank you for turning your camera back on. Let us continue.");
+  }
+
+  async function handleRejected() {
+    if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    cameraOffRef.current = false;
+    setCameraOff(false);
+    speak("This interview has been ended due to camera violations. The recruiter will be notified.");
+    setPhaseSync("rejected");
+
+    const interviewId = interviewIdRef.current;
+    try {
+      await apiFetch(`/api/interviews/${interviewId}/submit`, {
+        method: "POST",
+        body: JSON.stringify({
+          answers: [],
+          rejectedReason: "Camera turned off during interview",
+        }),
+      });
+    } catch (err) {
+      console.error("[rejected] Failed to submit rejection:", err);
     }
   }
 
@@ -508,14 +564,13 @@ export default function VoiceInterview() {
     await startCamera();
     startRecording();
     startElapsedTimer();
+    startCameraMonitoring();
 
-    // Play greeting
     setPhaseSync("greeting");
     setAiMessage(GREETING);
     addToConversation({ role: "ai", text: GREETING });
-    await speak(GREETING, 150); // 150 ms delay so voices finish loading before first utterance
+    await speak(GREETING, 150);
 
-    // Transition to listening
     setPhaseSync("listening");
     startListening();
   }
@@ -523,21 +578,27 @@ export default function VoiceInterview() {
   // ─── Handle "Done Answering" button ──────────────────────────────────────
   async function handleDoneAnswering() {
     if (phaseRef.current !== "listening") return;
+    if (!isRecordingRef.current) return;
 
-    stopListeningInternal();
+    const transcript = await stopAndTranscribe();
 
-    const answerText = transcriptRef.current.trim() || "No answer provided";
+    if (!transcript || transcript.trim().length < 3) {
+      setLiveTranscript("Nothing captured — please try again");
+      setTimeout(() => {
+        setLiveTranscript("");
+        startListening();
+      }, 2000);
+      return;
+    }
+
+    const answerText = transcript.trim();
     addToConversation({ role: "candidate", text: answerText });
-
     setPhaseSync("thinking");
     setLiveTranscript("");
 
     const data = interviewRef.current!;
     const currentConversation = [...conversationRef.current];
     const elapsed = elapsedSecondsRef.current;
-
-    // Force wrap-up after 30 min regardless of AI response
-    // Hard-stop at 100% of configured duration (default 30 min)
     const durationSecs = (data.durationMinutes ?? 30) * 60;
     const forceComplete = elapsed >= durationSecs;
 
@@ -557,7 +618,6 @@ export default function VoiceInterview() {
 
       const result = (await res.json()) as ConversationApiResponse;
 
-      // Hard stop at 30 min
       if (forceComplete && !result.isComplete) {
         result.isComplete = true;
         result.nextQuestion =
@@ -582,7 +642,6 @@ export default function VoiceInterview() {
       }
     } catch (err) {
       console.error("Failed to get next question:", err);
-      // Graceful fallback — ask a generic question and continue
       const fallback =
         "Could you tell me about a recent project you're most proud of and what your specific contributions were to its success?";
       setAiMessage(fallback);
@@ -594,12 +653,12 @@ export default function VoiceInterview() {
     }
   }
 
-  // ─── Submit interview for scoring ─────────────────────────────────────────
+  // ─── Submit interview ─────────────────────────────────────────────────────
   async function submitInterview() {
     setPhaseSync("submitting");
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
 
-    // 1. Stop recorder first — stream must still be alive so the final chunk flushes
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
       await new Promise<void>((resolve) => {
@@ -608,10 +667,8 @@ export default function VoiceInterview() {
       });
     }
 
-    // 2. Safe to stop camera now that recorder is done
     stopCameraInternal();
 
-    // 3. Build answers from candidate turns with their corresponding AI questions
     const history = conversationRef.current;
     const aiTurns = history.filter((entry) => entry.role === "ai");
     const answers = history
@@ -622,14 +679,14 @@ export default function VoiceInterview() {
         answerText: entry.text,
       }));
 
-    // 4. Upload recording and submit interview in parallel — neither blocks the other
+    const interviewId = interviewIdRef.current;
+
     const uploadPromise = uploadRecording(interviewId);
 
     const submitPromise: Promise<void> = (async () => {
       try {
-        const res = await fetch(`${API_BASE}/interviews/${interviewId}/submit`, {
+        const res = await apiFetch(`/api/interviews/${interviewId}/submit`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ answers, conversationHistory: conversationRef.current }),
         });
         if (!res.ok) {
@@ -638,7 +695,6 @@ export default function VoiceInterview() {
         }
       } catch (err) {
         console.error("[submit] Failed to submit interview for evaluation:", err);
-        // Non-fatal — still show the thank you screen
       }
     })();
 
@@ -648,7 +704,8 @@ export default function VoiceInterview() {
   }
 
   // ─── Derived state ────────────────────────────────────────────────────────
-  const isInterviewActive = !["loading", "waiting", "permissions", "camera-starting", "submitting", "complete", "error"].includes(phase);
+  const isInterviewActive = !["loading", "waiting", "permissions", "camera-starting", "submitting", "complete", "rejected", "error"].includes(phase);
+  const isAISpeaking = phase === "greeting" || phase === "speaking";
   const answersCount = conversationHistory.filter((m) => m.role === "candidate").length;
   const isNearEnd = elapsedSeconds >= 1680;
 
@@ -657,19 +714,25 @@ export default function VoiceInterview() {
   return (
     <div className="relative h-screen w-screen bg-black overflow-hidden select-none">
 
-      {/* ── VIDEO ELEMENT (always in DOM, shown only during active interview) ── */}
+      {/* VIDEO ELEMENT */}
       <video
         ref={videoRef}
         autoPlay
         muted
         playsInline
-        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${
+        className={`absolute inset-0 transition-opacity duration-500 ${
           isInterviewActive && isCameraReady ? "opacity-100" : "opacity-0"
         }`}
-        style={{ transform: "scaleX(-1)" }}
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "contain",
+          transform: "scaleX(-1)",
+          backgroundColor: "#000",
+        }}
       />
 
-      {/* Dark overlay when camera isn't ready (during interview) */}
+      {/* Camera unavailable placeholder */}
       {isInterviewActive && !isCameraReady && (
         <div className="absolute inset-0 bg-gray-950 flex items-center justify-center">
           <div className="text-center">
@@ -683,9 +746,33 @@ export default function VoiceInterview() {
         </div>
       )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* LOADING                                                             */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ════════════════ CAMERA OFF OVERLAY ════════════════ */}
+      {cameraOff && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "rgba(0,0,0,0.92)" }}>
+          <div className="text-center p-8 max-w-sm w-full">
+            <div className="text-5xl mb-4 animate-pulse">⚠️</div>
+            <h2 className="text-2xl font-bold text-red-500 mb-3">Camera Required</h2>
+            <p className="text-white mb-2">
+              Turn your camera back on within
+            </p>
+            <p className={`font-mono font-bold text-4xl mb-4 ${cameraCountdown <= 10 ? "text-red-400" : "text-white"}`}>
+              {cameraCountdown}s
+            </p>
+            {cameraWarnings > 1 && (
+              <p className="text-yellow-400 text-sm mb-4">Warning {cameraWarnings}/3</p>
+            )}
+            <button
+              onClick={handleCameraBack}
+              className="w-full py-3 rounded-xl text-white font-semibold text-base"
+              style={{ backgroundColor: "#6366F1" }}
+            >
+              My Camera is On — Continue
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ LOADING ════════════════ */}
       {phase === "loading" && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950">
           <div className="text-center">
@@ -698,24 +785,17 @@ export default function VoiceInterview() {
         </div>
       )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* WAITING — scheduled but not yet within the 10-min activation window */}
+      {/* ════════════════ WAITING ════════════════ */}
       {phase === "waiting" && interview?.scheduledAt && (() => {
         const { date, time } = formatScheduledDateTime(interview.scheduledAt);
         return (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
             <div className="max-w-md w-full text-center">
-              {/* Logo */}
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-700 to-indigo-500 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-red-900/40">
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-700 to-indigo-500 flex items-center justify-center mx-auto mb-6 shadow-xl">
                 <span className="text-white text-3xl font-black">A</span>
               </div>
-
               <h1 className="text-2xl font-bold text-white mb-2">Interview Not Started Yet</h1>
-              <p className="text-gray-400 text-sm mb-6">
-                Your interview is scheduled for
-              </p>
-
-              {/* Schedule pill */}
+              <p className="text-gray-400 text-sm mb-6">Your interview is scheduled for</p>
               <div className="bg-gray-900 rounded-2xl border border-gray-700 p-5 mb-6 text-left space-y-3">
                 <div className="flex items-center gap-3">
                   <span className="text-2xl">📅</span>
@@ -741,28 +821,17 @@ export default function VoiceInterview() {
                   </div>
                 )}
               </div>
-
-              {/* Countdown */}
               <div className="bg-blue-950/40 border border-blue-700/40 rounded-xl px-5 py-4 mb-6">
                 <p className="text-blue-400 text-xs uppercase tracking-wider mb-1">Link activates in</p>
-                <p className="text-white text-3xl font-mono font-bold tracking-wider">
-                  {formatCountdown(waitingSecondsLeft)}
-                </p>
+                <p className="text-white text-3xl font-mono font-bold tracking-wider">{formatCountdown(waitingSecondsLeft)}</p>
               </div>
-
-              <p className="text-gray-600 text-sm">
-                Please join back closer to your interview time.
-                <br />
-                This page checks automatically every second.
-              </p>
+              <p className="text-gray-600 text-sm">Please join back closer to your interview time.<br />This page checks automatically every second.</p>
             </div>
           </div>
         );
       })()}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* CONSENT                                                             */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ════════════════ CONSENT ════════════════ */}
       {phase === "permissions" && !hasConsented && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
           <div className="bg-gray-900 rounded-2xl p-8 max-w-md w-full">
@@ -771,7 +840,7 @@ export default function VoiceInterview() {
             <p className="text-gray-400 mb-6">This interview will be:</p>
             <ul className="space-y-3 mb-8">
               {[
-                "Conducted by AccionHire AI",
+                "Conducted by Girija",
                 "Recorded (video + audio)",
                 "Evaluated automatically",
                 "Shared with the recruiting team",
@@ -783,20 +852,13 @@ export default function VoiceInterview() {
               ))}
             </ul>
             <p className="text-gray-500 text-sm mb-6">
-              By clicking "I Agree &amp; Continue", you consent to this AI interview being recorded and evaluated.
+              By clicking "I Agree &amp; Continue", you consent to this interview being recorded and evaluated.
             </p>
             <div className="flex gap-3">
-              <button
-                onClick={() => navigate("/")}
-                className="flex-1 py-3 rounded-lg border border-gray-600 text-gray-400 hover:bg-gray-800"
-              >
+              <button onClick={() => navigate("/")} className="flex-1 py-3 rounded-lg border border-gray-600 text-gray-400 hover:bg-gray-800">
                 Decline
               </button>
-              <button
-                onClick={() => setHasConsented(true)}
-                className="flex-1 py-3 rounded-lg text-white font-semibold"
-                style={{ backgroundColor: "#6366F1" }}
-              >
+              <button onClick={() => setHasConsented(true)} className="flex-1 py-3 rounded-lg text-white font-semibold" style={{ backgroundColor: "#6366F1" }}>
                 I Agree &amp; Continue
               </button>
             </div>
@@ -804,51 +866,26 @@ export default function VoiceInterview() {
         </div>
       )}
 
-      {/* PERMISSIONS                                                         */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ════════════════ PERMISSIONS ════════════════ */}
       {phase === "permissions" && hasConsented && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6 overflow-y-auto">
           <div className="max-w-md w-full my-auto">
             <div className="bg-gray-900 rounded-2xl p-8 border border-gray-800 text-center">
-              {/* Logo */}
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-700 to-indigo-500 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-red-900/40">
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-700 to-indigo-500 flex items-center justify-center mx-auto mb-6 shadow-xl">
                 <span className="text-white text-3xl font-black">A</span>
               </div>
-
-              <h1 className="text-2xl font-bold text-white mb-1">AccionHire AI Interview</h1>
+              <h1 className="text-2xl font-bold text-white mb-1">AccionHire Interview</h1>
               <p className="text-gray-400 text-sm mb-6">
-                Welcome,{" "}
-                <span className="text-white font-semibold">{interview?.candidateName}</span>.<br />
-                You're interviewing for{" "}
-                <span className="text-blue-400 font-semibold">{interview?.jobTitle}</span>.
+                Welcome, <span className="text-white font-semibold">{interview?.candidateName}</span>.<br />
+                You're interviewing for <span className="text-blue-400 font-semibold">{interview?.jobTitle}</span>.
               </p>
-
-              {/* Permission items */}
               <div className="space-y-3 mb-8 text-left">
                 {[
-                  {
-                    icon: "📷",
-                    color: "bg-green-500/20 text-green-400",
-                    title: "Camera access",
-                    desc: "Your video + audio will be recorded and stored securely for HR review",
-                  },
-                  {
-                    icon: "🎙️",
-                    color: "bg-blue-500/20 text-blue-400",
-                    title: "Microphone access",
-                    desc: "Browser-native speech recognition — no audio sent to servers",
-                  },
-                  {
-                    icon: "⏱️",
-                    color: "bg-purple-500/20 text-purple-400",
-                    title: "~30 minute session",
-                    desc: "Conversational AI interview — no per-answer time limit, speak freely",
-                  },
+                  { icon: "📷", color: "bg-green-500/20 text-green-400", title: "Camera access", desc: "Your video + audio will be recorded and stored securely for HR review" },
+                  { icon: "🎙️", color: "bg-blue-500/20 text-blue-400", title: "Microphone access", desc: "Audio transcribed via Whisper AI — speak clearly for best results" },
+                  { icon: "⏱️", color: "bg-purple-500/20 text-purple-400", title: "~30 minute session", desc: "Conversational AI interview — no per-answer time limit, speak freely" },
                 ].map(({ icon, color, title, desc }) => (
-                  <div
-                    key={title}
-                    className="flex items-start gap-3 bg-gray-800/50 rounded-xl p-3 border border-gray-700/30"
-                  >
+                  <div key={title} className="flex items-start gap-3 bg-gray-800/50 rounded-xl p-3 border border-gray-700/30">
                     <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${color}`}>
                       <span className="text-base">{icon}</span>
                     </div>
@@ -859,24 +896,19 @@ export default function VoiceInterview() {
                   </div>
                 ))}
               </div>
-
               <button
                 onClick={handleRequestPermissions}
                 className="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold py-4 px-6 rounded-xl transition-all text-base shadow-lg shadow-blue-900/50"
               >
                 Allow &amp; Start Interview
               </button>
-              <p className="text-gray-700 text-xs mt-3">
-                Best in Chrome · Requires camera + microphone permissions
-              </p>
+              <p className="text-gray-700 text-xs mt-3">Best in Chrome · Requires camera + microphone permissions</p>
             </div>
           </div>
         </div>
       )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* CAMERA STARTING                                                     */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ════════════════ CAMERA STARTING ════════════════ */}
       {phase === "camera-starting" && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950">
           <div className="text-center">
@@ -886,30 +918,21 @@ export default function VoiceInterview() {
         </div>
       )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* ACTIVE INTERVIEW OVERLAYS                                           */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ════════════════ ACTIVE INTERVIEW ════════════════ */}
       {isInterviewActive && (
         <>
-          {/* ── Top bar ─────────────────────────────────────────────────── */}
+          {/* Top bar */}
           <div className="absolute top-0 left-0 right-0 z-10 flex justify-between items-center p-3 sm:p-4">
-            {/* Recording indicator */}
             <div className="flex items-center gap-2 bg-black/70 backdrop-blur-md rounded-full px-3 py-1.5 border border-white/10">
               <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
               <span className="text-white text-xs font-bold tracking-widest">REC</span>
               {recordingChunkCount > 0 && (
-                <span className="text-white/50 text-xs">
-                  {(recordingChunkCount * 1000 / (1024 * 1024)).toFixed(1)}MB
-                </span>
+                <span className="text-white/50 text-xs">{(recordingChunkCount * 1000 / (1024 * 1024)).toFixed(1)}MB</span>
               )}
             </div>
-
-            {/* Centre label */}
             <div className="bg-black/70 backdrop-blur-md rounded-full px-4 py-1.5 border border-white/10">
               <Logo variant="light" size={20} />
             </div>
-
-            {/* Elapsed timer */}
             <div className="flex items-center gap-1.5 bg-black/70 backdrop-blur-md rounded-full px-3 py-1.5 border border-white/10">
               <div className={`w-1.5 h-1.5 rounded-full ${isNearEnd ? "bg-orange-400 animate-pulse" : "bg-[#6366F1]"}`} />
               <span className={`text-sm font-mono font-bold ${isNearEnd ? "text-orange-400" : "text-[#6366F1]"}`}>
@@ -918,82 +941,61 @@ export default function VoiceInterview() {
             </div>
           </div>
 
-          {/* ── Candidate name label (bottom-left of video) ──────────────── */}
+          {/* Candidate name label */}
           <div className="absolute z-10" style={{ bottom: "calc(var(--bottom-panel-height, 220px) + 12px)", left: "16px" }}>
             <div className="bg-black/70 backdrop-blur-md rounded-lg px-3 py-1.5 border border-white/10">
               <span className="text-white text-sm font-medium">{interview?.candidateName}</span>
             </div>
           </div>
 
-          {/* ── AI avatar (bottom-right of video) ───────────────────────── */}
-          <div className="absolute z-10 right-4" style={{ bottom: "calc(var(--bottom-panel-height, 220px) + 12px)" }}>
-            <div className="bg-black/80 backdrop-blur-md rounded-2xl p-3 border border-white/10 flex items-center gap-2.5 shadow-xl">
-              {/* Avatar */}
-              <div className="relative flex-shrink-0">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-700 to-indigo-500 flex items-center justify-center shadow-lg">
-                  <span className="text-white text-sm font-black">A</span>
-                </div>
-                {/* Online dot */}
-                <div
-                  className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-black ${
-                    phase === "greeting" || phase === "speaking"
-                      ? "bg-green-400 animate-pulse"
-                      : phase === "thinking"
-                      ? "bg-yellow-400 animate-pulse"
-                      : "bg-gray-500"
-                  }`}
-                />
+          {/* Girija avatar */}
+          <div
+            className="absolute z-10"
+            style={{
+              bottom: "calc(var(--bottom-panel-height, 220px) + 12px)",
+              right: 16,
+              backgroundColor: "#1E293B",
+              borderRadius: 16,
+              padding: "12px 16px",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              border: "1px solid #334155",
+            }}
+          >
+            <div style={{ width: 44, height: 44, borderRadius: "50%", backgroundColor: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 700, color: "white", flexShrink: 0, position: "relative" }}>
+              G
+              <div style={{ position: "absolute", bottom: 2, right: 2, width: 10, height: 10, backgroundColor: "#10B981", borderRadius: "50%", border: "2px solid #1E293B" }} />
+            </div>
+            <div>
+              <div style={{ color: "white", fontWeight: 600, fontSize: 14 }}>Girija</div>
+              <div style={{ color: isAISpeaking ? "#6366F1" : "#94A3B8", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                {isAISpeaking ? (
+                  <>
+                    <span style={{ display: "flex", gap: 2, alignItems: "center" }}>
+                      {[1, 2, 3, 4].map((i) => (
+                        <div key={i} style={{ width: 3, backgroundColor: "#6366F1", borderRadius: 2, height: i % 2 === 0 ? 12 : 8 }} />
+                      ))}
+                    </span>
+                    Speaking...
+                  </>
+                ) : phase === "thinking" ? "Thinking..." : "Listening"}
               </div>
-
-              {/* Info */}
-              <div>
-                <div className="mb-0.5">
-                  <Logo variant="light" size={20} />
-                </div>
-                <p className="text-gray-400 text-xs">
-                  {phase === "greeting" || phase === "speaking"
-                    ? "Speaking..."
-                    : phase === "listening"
-                    ? "Listening"
-                    : phase === "thinking"
-                    ? "Thinking..."
-                    : "AI Interviewer"}
-                </p>
-              </div>
-
-              {/* Speaking bars */}
-              {(phase === "greeting" || phase === "speaking") && (
-                <SpeakingBars color="bg-blue-400" />
-              )}
-              {phase === "thinking" && (
-                <div className="flex gap-1">
-                  {[0, 1, 2].map((i) => (
-                    <div
-                      key={i}
-                      className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-bounce"
-                      style={{ animationDelay: `${i * 0.15}s` }}
-                    />
-                  ))}
-                </div>
-              )}
             </div>
           </div>
 
-          {/* ── Topic badge ──────────────────────────────────────────────── */}
+          {/* Topic badge */}
           {topicArea && (
             <div className="absolute top-14 sm:top-16 left-3 sm:left-4 z-10">
               <div className="bg-black/60 backdrop-blur-md rounded-full px-3 py-1 border border-white/10">
-                <span className="text-xs font-medium" style={{ color: '#6366F1' }}>{topicLabel(topicArea)}</span>
+                <span className="text-xs font-medium" style={{ color: "#6366F1" }}>{topicLabel(topicArea)}</span>
               </div>
             </div>
           )}
 
-          {/* ── Bottom panel ─────────────────────────────────────────────── */}
+          {/* Bottom panel */}
           <div className="absolute bottom-0 left-0 right-0 z-10">
-            {/* Gradient fade */}
             <div className="h-16 bg-gradient-to-t from-black/90 to-transparent pointer-events-none" />
-
-            {/* Panel body */}
             <div className="bg-black/90 backdrop-blur-md px-4 pt-3 pb-6 border-t border-white/5 space-y-3">
 
               {/* AI message (greeting / speaking) */}
@@ -1001,45 +1003,43 @@ export default function VoiceInterview() {
                 <div className="bg-blue-950/60 rounded-xl px-4 py-3 border border-blue-700/30">
                   <div className="flex items-center gap-2 mb-1.5">
                     <SpeakingBars color="bg-blue-400" />
-                    <span className="text-blue-400 text-xs font-semibold">AccionHire AI</span>
+                    <span className="text-blue-400 text-xs font-semibold">Girija</span>
                   </div>
                   <p className="text-white text-sm leading-relaxed line-clamp-3">{aiMessage}</p>
                 </div>
               )}
 
-              {/* Thinking indicator */}
+              {/* Thinking */}
               {phase === "thinking" && (
                 <div className="flex items-center justify-center gap-3 py-2">
                   <div className="flex gap-1.5">
                     {[0, 1, 2].map((i) => (
-                      <div
-                        key={i}
-                        className="w-2.5 h-2.5 bg-blue-500 rounded-full animate-bounce"
-                        style={{ animationDelay: `${i * 0.15}s` }}
-                      />
+                      <div key={i} className="w-2.5 h-2.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
                     ))}
                   </div>
-                  <span className="text-gray-300 text-sm">Processing your answer...</span>
+                  <span className="text-gray-300 text-sm">⏳ Processing your answer...</span>
                 </div>
               )}
 
-              {/* Live transcript (listening) */}
+              {/* Live transcript / recording status */}
               {phase === "listening" && (
                 <div className="bg-gray-900/80 rounded-xl px-4 py-3 border border-gray-700/50 min-h-[60px]">
                   <div className="flex items-center gap-2 mb-1.5">
-                    <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
-                    <span className="text-green-400 text-xs font-semibold">Listening — speak freely</span>
+                    <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                    <span className="text-red-400 text-xs font-semibold">🎤 Recording — click Done when finished</span>
                   </div>
-                  {liveTranscript ? (
+                  {liveTranscript === "Transcribing..." ? (
+                    <p className="text-blue-400 text-sm italic">⏳ Transcribing your answer...</p>
+                  ) : liveTranscript ? (
                     <p className="text-white text-sm leading-relaxed">{liveTranscript}</p>
                   ) : (
-                    <p className="text-gray-600 text-sm italic">Your words will appear here as you speak...</p>
+                    <p className="text-gray-600 text-sm italic">Your answer will appear here after you click Done...</p>
                   )}
                 </div>
               )}
 
-              {/* Done Answering button */}
-              {phase === "listening" && (
+              {/* Done Answering button — hidden while transcribing */}
+              {phase === "listening" && liveTranscript !== "Transcribing..." && (
                 <button
                   onClick={handleDoneAnswering}
                   className="w-full bg-[#6366F1] hover:bg-[#4F46E5] active:bg-[#4F46E5] text-white font-bold py-3.5 px-6 rounded-xl transition-all text-base shadow-xl shadow-indigo-900/40 flex items-center justify-center gap-2"
@@ -1051,11 +1051,9 @@ export default function VoiceInterview() {
                 </button>
               )}
 
-              {/* Speaking / thinking hint */}
+              {/* Speaking hint */}
               {(phase === "greeting" || phase === "speaking") && (
-                <p className="text-center text-gray-600 text-xs pb-1">
-                  AI is speaking — please listen
-                </p>
+                <p className="text-center text-gray-600 text-xs pb-1">Girija is speaking — please listen</p>
               )}
 
               {/* Answer counter */}
@@ -1069,9 +1067,7 @@ export default function VoiceInterview() {
         </>
       )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* SUBMITTING                                                          */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ════════════════ SUBMITTING ════════════════ */}
       {phase === "submitting" && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950">
           <div className="text-center">
@@ -1093,28 +1089,20 @@ export default function VoiceInterview() {
         </div>
       )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* COMPLETE                                                            */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ════════════════ COMPLETE ════════════════ */}
       {phase === "complete" && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6 overflow-y-auto">
           <div className="max-w-md w-full my-auto text-center">
-            {/* Check mark */}
             <div className="w-24 h-24 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-6">
               <svg className="w-12 h-12 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
               </svg>
             </div>
-
             <h1 className="text-3xl font-bold text-white mb-3">Interview Complete!</h1>
-            <p className="text-gray-300 text-lg mb-2">
-              Your recruiter will receive a detailed report shortly.
-            </p>
+            <p className="text-gray-300 text-lg mb-2">Your recruiter will receive a detailed report shortly.</p>
             <p className="text-gray-500 text-sm mb-8 leading-relaxed">
               Thank you, {interview?.candidateName?.split(" ")[0]}. We appreciate your time and wish you all the best.
             </p>
-
-            {/* Summary card */}
             <div className="bg-gray-900 rounded-2xl p-5 border border-gray-800 text-left space-y-3 mb-6">
               <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Session Summary</p>
               <div className="flex justify-between items-center">
@@ -1131,26 +1119,33 @@ export default function VoiceInterview() {
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-gray-400 text-sm">Recording</span>
-                {uploadStatus === "done" && (
-                  <span className="text-green-400 text-sm font-medium">Saved ✓</span>
-                )}
-                {uploadStatus === "failed" && (
-                  <span className="text-yellow-400 text-sm font-medium">Upload failed</span>
-                )}
-                {(uploadStatus === "idle" || uploadStatus === "uploading") && (
-                  <span className="text-gray-500 text-sm">—</span>
-                )}
+                {uploadStatus === "done" && <span className="text-green-400 text-sm font-medium">Saved ✓</span>}
+                {uploadStatus === "failed" && <span className="text-yellow-400 text-sm font-medium">Upload failed</span>}
+                {(uploadStatus === "idle" || uploadStatus === "uploading") && <span className="text-gray-500 text-sm">—</span>}
               </div>
             </div>
-
             <p className="text-gray-700 text-xs">You may now close this tab.</p>
           </div>
         </div>
       )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* ERROR                                                               */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* ════════════════ REJECTED ════════════════ */}
+      {phase === "rejected" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center">
+            <div className="w-24 h-24 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-6">
+              <span className="text-5xl">❌</span>
+            </div>
+            <h1 className="text-2xl font-bold text-white mb-3">Interview Ended</h1>
+            <p className="text-gray-400 text-sm leading-relaxed">
+              Camera was turned off multiple times.<br />
+              The recruiting team has been notified.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ ERROR ════════════════ */}
       {phase === "error" && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
           <div className="max-w-sm w-full text-center">

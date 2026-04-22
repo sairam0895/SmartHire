@@ -52,6 +52,7 @@ interface CreatedInterview {
   jobTitle: string;
   scheduledAt: string | null;
   durationMinutes: number | null;
+  candidateToken: string | null;
 }
 
 export default function CreateInterview() {
@@ -125,7 +126,7 @@ export default function CreateInterview() {
   }
 
   const interviewUrl = createdData
-    ? `${window.location.origin}/voice-interview/${createdData.id}`
+    ? `${window.location.origin}/interview/${createdData.candidateToken ?? createdData.id}`
     : "";
 
   const copyToClipboard = () => {
@@ -478,7 +479,7 @@ export default function CreateInterview() {
                     </a>
                   </Button>
                   <Button
-                    onClick={() => navigate(`/voice-interview/${createdData.id}`)}
+                    onClick={() => window.open(interviewUrl, "_blank")}
                     className="gap-2"
                   >
                     Preview as Candidate <ArrowRight className="h-4 w-4" />
