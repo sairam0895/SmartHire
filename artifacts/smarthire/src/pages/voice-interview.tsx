@@ -306,21 +306,25 @@ export default function VoiceInterview() {
       if (v.length > 0) voicesRef.current = v;
     };
     load();
+    window.speechSynthesis.onvoiceschanged = () => { window.speechSynthesis.getVoices(); load(); };
     window.speechSynthesis.addEventListener("voiceschanged", load);
     return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
   }, []);
 
   function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
     if (voices.length === 0) return null;
-    const ravi = voices.find((v) => v.name.includes("Ravi"));
-    if (ravi) return ravi;
-    const heera = voices.find((v) => v.name.includes("Heera"));
-    if (heera) return heera;
-    const enIN = voices.find((v) => v.lang === "en-IN" || v.lang.startsWith("en-IN"));
-    if (enIN) return enIN;
-    const indian = voices.find((v) => v.name.toLowerCase().includes("indian"));
-    if (indian) return indian;
-    return voices.find((v) => v.lang.startsWith("en-US")) ?? null;
+    return (
+      voices.find((v) => v.name.includes("Heera")) ||       // Microsoft Heera — Indian female
+      voices.find((v) => v.name.includes("Raveena")) ||     // Indian female
+      voices.find((v) => v.name.includes("Neerja")) ||      // Indian female
+      voices.find((v) => v.lang === "en-IN" && v.name.toLowerCase().includes("female")) ||
+      voices.find((v) => v.lang === "en-IN") ||             // Any Indian English
+      voices.find((v) => v.name.includes("Zira")) ||        // Microsoft Zira — US female
+      voices.find((v) => v.name.includes("Susan")) ||       // Female
+      voices.find((v) => v.name.includes("Samantha")) ||    // Female
+      voices.find((v) => v.lang.startsWith("en")) ||        // Any English fallback
+      null
+    );
   }
 
   function speak(text: string, delayMs = 0): Promise<void> {
@@ -329,8 +333,9 @@ export default function VoiceInterview() {
 
       const doSpeak = () => {
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 0.85;
-        utterance.pitch = 0.95;
+        utterance.lang = "en-IN";
+        utterance.rate = 1.1;
+        utterance.pitch = 1.2;
         utterance.volume = 1.0;
 
         const voices = voicesRef.current.length > 0
