@@ -46,11 +46,10 @@ interface ConversationApiResponse {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const GREETING =
-  "Hi there! I'm Girija, and I will be your interviewer today. It is so lovely to meet you! " +
-  "I just want you to know — this is a real conversation, not a test with right or wrong answers. " +
-  "I genuinely want to get to know you and your journey. " +
-  "So take a breath, be yourself, and let us have a wonderful chat. " +
-  "To start us off — tell me a bit about yourself and what has been the most exciting chapter of your career so far?";
+  "Hi there! I am AccionHire, your AI interviewer today. It is so lovely to meet you! " +
+  "This is a real conversation — no trick questions, just a genuine chat. " +
+  "Take a breath, be yourself, and let us have a wonderful conversation. " +
+  "To get us started — tell me about yourself and what has been the most exciting chapter of your career so far?";
 
 const API_BASE = `${apiUrl}/api`;
 
@@ -845,7 +844,7 @@ export default function VoiceInterview() {
             <p className="text-gray-400 mb-6">This interview will be:</p>
             <ul className="space-y-3 mb-8">
               {[
-                "Conducted by Girija",
+                "Conducted by AccionHire AI",
                 "Recorded (video + audio)",
                 "Evaluated automatically",
                 "Shared with the recruiting team",
@@ -953,7 +952,7 @@ export default function VoiceInterview() {
             </div>
           </div>
 
-          {/* Girija avatar */}
+          {/* AccionHire avatar */}
           <div
             className="absolute z-10"
             style={{
@@ -969,11 +968,11 @@ export default function VoiceInterview() {
             }}
           >
             <div style={{ width: 44, height: 44, borderRadius: "50%", backgroundColor: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 700, color: "white", flexShrink: 0, position: "relative" }}>
-              G
+              A
               <div style={{ position: "absolute", bottom: 2, right: 2, width: 10, height: 10, backgroundColor: "#10B981", borderRadius: "50%", border: "2px solid #1E293B" }} />
             </div>
             <div>
-              <div style={{ color: "white", fontWeight: 600, fontSize: 14 }}>Girija</div>
+              <div style={{ color: "white", fontWeight: 600, fontSize: 14 }}>AccionHire</div>
               <div style={{ color: isAISpeaking ? "#6366F1" : "#94A3B8", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
                 {isAISpeaking ? (
                   <>
@@ -1008,7 +1007,7 @@ export default function VoiceInterview() {
                 <div className="bg-blue-950/60 rounded-xl px-4 py-3 border border-blue-700/30">
                   <div className="flex items-center gap-2 mb-1.5">
                     <SpeakingBars color="bg-blue-400" />
-                    <span className="text-blue-400 text-xs font-semibold">Girija</span>
+                    <span className="text-blue-400 text-xs font-semibold">AccionHire</span>
                   </div>
                   <p className="text-white text-sm leading-relaxed line-clamp-3">{aiMessage}</p>
                 </div>
@@ -1058,7 +1057,7 @@ export default function VoiceInterview() {
 
               {/* Speaking hint */}
               {(phase === "greeting" || phase === "speaking") && (
-                <p className="text-center text-gray-600 text-xs pb-1">Girija is speaking — please listen</p>
+                <p className="text-center text-gray-600 text-xs pb-1">AccionHire is speaking — please listen</p>
               )}
 
               {/* Answer counter */}
