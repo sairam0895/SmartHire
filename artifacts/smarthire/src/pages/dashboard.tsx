@@ -62,6 +62,7 @@ type FilterOption = "all" | "web" | "bot" | "pending" | "completed" | "cancelled
 interface Interview {
   id: number;
   candidateName: string;
+  candidateEmail: string | null;
   recruiterName: string;
   jobTitle: string;
   status: string;
@@ -96,6 +97,7 @@ export default function Dashboard() {
   const [filter, setFilter] = useState<FilterOption>("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Reschedule modal
   const [rescheduleTarget, setRescheduleTarget] = useState<Interview | null>(null);
@@ -146,13 +148,22 @@ export default function Dashboard() {
       case "cancelled": list = list.filter((i) => i.status === "cancelled"); break;
     }
 
-    return list.sort((a, b) => {
-      const aTime = a.scheduledAt ? new Date(a.scheduledAt).getTime() : 0;
-      const bTime = b.scheduledAt ? new Date(b.scheduledAt).getTime() : 0;
-      if (aTime !== bTime) return bTime - aTime;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-  }, [interviews, filter]);
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(
+        (i) =>
+          i.candidateName?.toLowerCase().includes(q) ||
+          i.jobTitle?.toLowerCase().includes(q) ||
+          i.candidateEmail?.toLowerCase().includes(q) ||
+          i.recruiterName?.toLowerCase().includes(q) ||
+          i.status?.toLowerCase().includes(q)
+      );
+    }
+
+    return list.sort((a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [interviews, filter, searchQuery]);
 
   const handleFilterChange = (f: FilterOption) => {
     setFilter(f);
@@ -444,6 +455,60 @@ export default function Dashboard() {
             </div>
           </CardHeader>
           <CardContent>
+            <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center" }}>
+              <div style={{ position: "relative", flex: 1 }}>
+                <input
+                  type="text"
+                  placeholder="Search by candidate name, role, or email..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px 10px 40px",
+                    borderRadius: 8,
+                    border: "1px solid #E2E8F0",
+                    fontSize: 14,
+                    outline: "none",
+                    backgroundColor: "#F8FAFC",
+                  }}
+                />
+                <span
+                  style={{
+                    position: "absolute",
+                    left: 12,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    color: "#94A3B8",
+                    fontSize: 16,
+                  }}
+                >
+                  🔍
+                </span>
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    style={{
+                      position: "absolute",
+                      right: 12,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "#94A3B8",
+                      fontSize: 18,
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              {searchQuery && (
+                <span className="text-sm text-muted-foreground whitespace-nowrap">
+                  {filteredInterviews.length} of {interviews?.length ?? 0} interviews
+                </span>
+              )}
+            </div>
             {interviewsLoading ? (
               <div className="flex justify-center p-8">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />

@@ -254,6 +254,7 @@ const SubmitBodyExtended = z.object({
     text: z.string(),
   })).optional(),
   rejectedReason: z.string().optional(),
+  faceViolations: z.number().int().optional(),
 });
 
 router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
@@ -279,7 +280,7 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     return;
   }
 
-  const { answers, conversationHistory: rawHistory, rejectedReason } = bodyParsed.data;
+  const { answers, conversationHistory: rawHistory, rejectedReason, faceViolations } = bodyParsed.data;
 
   // Handle camera rejection fast path
   if (rejectedReason) {
@@ -327,10 +328,21 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
   const endTime = Date.now();
   const durationSeconds = Math.floor((endTime - startTime) / 1000);
 
-  const conversationHistory = rawHistory ?? answers.flatMap((a, i) => [
+  const baseHistory = rawHistory ?? answers.flatMap((a, i) => [
     { role: "ai" as const, text: a.questionText ?? `Question ${i + 1}` },
     { role: "candidate" as const, text: a.answerText },
   ]);
+
+  const conversationHistory =
+    faceViolations && faceViolations > 0
+      ? [
+          {
+            role: "ai" as const,
+            text: `[System Note: Candidate's face was not visible ${faceViolations} time${faceViolations > 1 ? "s" : ""} during the interview. Note this in the recommendation.]`,
+          },
+          ...baseHistory,
+        ]
+      : baseHistory;
 
   const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
 

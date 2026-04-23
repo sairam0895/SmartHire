@@ -134,6 +134,12 @@ export default function VoiceInterview() {
   const cameraOffRef = useRef(false);
   const cameraWarningsRef = useRef(0);
   const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  const faceDetectionRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const noFaceCountRef = useRef(0);
+  const faceWarningRef = useRef(false);
+  const faceViolationsRef = useRef(0);
+  const [faceWarning, setFaceWarning] = useState(false);
+  const [faceViolationCount, setFaceViolationCount] = useState(0);
 
   // ── Sync helpers ──────────────────────────────────────────────────────────
   const setPhaseSync = useCallback((p: Phase) => {
@@ -243,6 +249,7 @@ export default function VoiceInterview() {
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
+    if (faceDetectionRef.current) clearInterval(faceDetectionRef.current);
     stopAudioRecorderInternal();
     stopCameraInternal();
     window.speechSynthesis.cancel();
@@ -540,12 +547,91 @@ export default function VoiceInterview() {
     speak("Thank you for turning your camera back on. Let us continue.");
   }
 
-  async function handleRejected() {
+  function startFaceDetection() {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx || !videoRef.current) return;
+
+    canvas.width = 320;
+    canvas.height = 240;
+
+    faceDetectionRef.current = setInterval(() => {
+      if (!videoRef.current) return;
+
+      ctx.drawImage(videoRef.current, 0, 0, 320, 240);
+      const imageData = ctx.getImageData(0, 0, 320, 240);
+      const data = imageData.data;
+
+      let skinPixels = 0;
+      let totalPixels = 0;
+
+      for (let y = 60; y < 180; y++) {
+        for (let x = 80; x < 240; x++) {
+          const idx = (y * 320 + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+
+          totalPixels++;
+
+          const isSkin =
+            (r > 60 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 15 && r - b > 20 && r < 250) ||
+            (r > 40 && g > 30 && b > 20 && r > b && g > b * 0.8 && r - b > 10);
+
+          if (isSkin) skinPixels++;
+        }
+      }
+
+      const skinRatio = skinPixels / totalPixels;
+
+      if (skinRatio < 0.03) {
+        noFaceCountRef.current++;
+        if (noFaceCountRef.current >= 5) {
+          handleFaceNotDetected();
+        }
+      } else {
+        if (noFaceCountRef.current > 0) {
+          noFaceCountRef.current = 0;
+          if (faceWarningRef.current) {
+            faceWarningRef.current = false;
+            setFaceWarning(false);
+            speak("Thank you, I can see you now. Let us continue.");
+          }
+        }
+      }
+    }, 2000);
+  }
+
+  function handleFaceNotDetected() {
+    noFaceCountRef.current = 0;
+    faceViolationsRef.current++;
+    setFaceViolationCount(faceViolationsRef.current);
+    faceWarningRef.current = true;
+    setFaceWarning(true);
+
+    window.speechSynthesis.cancel();
+
+    if (faceViolationsRef.current >= 3) {
+      handleRejected("Face not visible during interview");
+      return;
+    }
+
+    speak(
+      `I notice I cannot see your face clearly. Please make sure your face is visible on camera. This is warning ${faceViolationsRef.current} of 3. Repeated violations will end the interview.`
+    );
+  }
+
+  async function handleRejected(reason: string = "Camera turned off during interview") {
     if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
+    if (faceDetectionRef.current) clearInterval(faceDetectionRef.current);
     cameraOffRef.current = false;
     setCameraOff(false);
-    speak("This interview has been ended due to camera violations. The recruiter will be notified.");
+
+    const rejectionMessage = reason.startsWith("Face")
+      ? "This interview is being ended because your face has not been visible multiple times. The recruiting team will be notified."
+      : "This interview has been ended due to camera violations. The recruiter will be notified.";
+    speak(rejectionMessage);
     setPhaseSync("rejected");
 
     const interviewId = interviewIdRef.current;
@@ -554,7 +640,8 @@ export default function VoiceInterview() {
         method: "POST",
         body: JSON.stringify({
           answers: [],
-          rejectedReason: "Camera turned off during interview",
+          rejectedReason: reason,
+          faceViolations: faceViolationsRef.current,
         }),
       });
     } catch (err) {
@@ -569,6 +656,7 @@ export default function VoiceInterview() {
     startRecording();
     startElapsedTimer();
     startCameraMonitoring();
+    startFaceDetection();
 
     setPhaseSync("greeting");
     setAiMessage(GREETING);
@@ -691,7 +779,7 @@ export default function VoiceInterview() {
       try {
         const res = await apiFetch(`/api/interviews/${interviewId}/submit`, {
           method: "POST",
-          body: JSON.stringify({ answers, conversationHistory: conversationRef.current }),
+          body: JSON.stringify({ answers, conversationHistory: conversationRef.current, faceViolations: faceViolationsRef.current }),
         });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
@@ -772,6 +860,25 @@ export default function VoiceInterview() {
             >
               My Camera is On — Continue
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ FACE WARNING OVERLAY ════════════════ */}
+      {faceWarning && (
+        <div
+          className="absolute inset-0 z-40 flex items-center justify-center"
+          style={{ backgroundColor: "rgba(0,0,0,0.75)" }}
+        >
+          <div className="text-center p-8 max-w-sm w-full">
+            <div className="text-5xl mb-4">👤</div>
+            <h2 className="text-2xl font-bold mb-3" style={{ color: "#F59E0B" }}>
+              Face Not Detected
+            </h2>
+            <p className="text-white mb-2">Please ensure your face is clearly visible on camera.</p>
+            <p className="text-sm" style={{ color: "#F59E0B" }}>
+              Warning {faceViolationCount}/3
+            </p>
           </div>
         </div>
       )}
