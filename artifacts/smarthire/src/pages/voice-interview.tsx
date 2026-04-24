@@ -583,104 +583,71 @@ export default function VoiceInterview() {
   }
 
   function startFaceDetection() {
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    if (!ctx || !videoRef.current) return;
-
-    canvas.width = 320;
-    canvas.height = 240;
-
     faceDetectionRef.current = setInterval(() => {
       if (!videoRef.current) return;
 
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      canvas.width = 320;
+      canvas.height = 240;
       ctx.drawImage(videoRef.current, 0, 0, 320, 240);
       const imageData = ctx.getImageData(0, 0, 320, 240);
       const data = imageData.data;
 
       let skinPixels = 0;
+      let darkPixels = 0;
       let totalPixels = 0;
 
-      for (let y = 60; y < 180; y++) {
-        for (let x = 80; x < 240; x++) {
+      for (let y = 40; y < 200; y++) {
+        for (let x = 60; x < 260; x++) {
           const idx = (y * 320 + x) * 4;
           const r = data[idx];
           const g = data[idx + 1];
           const b = data[idx + 2];
+          const brightness = (r + g + b) / 3;
 
           totalPixels++;
+          if (brightness < 30) darkPixels++;
 
           const isSkin =
-            (r > 60 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 15 && r - b > 20 && r < 250) ||
-            (r > 40 && g > 30 && b > 20 && r > b && g > b * 0.8 && r - b > 10);
+            (r > 80 && g > 50 && b > 30 && r > g && r > b && r - b > 15 && r < 250) ||
+            (r > 50 && g > 35 && b > 20 && r > b && r - b > 10 && g > b * 0.8);
 
           if (isSkin) skinPixels++;
         }
       }
 
       const skinRatio = skinPixels / totalPixels;
+      const darkRatio = darkPixels / totalPixels;
+      const faceVisible = skinRatio >= 0.02 && darkRatio < 0.60;
 
-      if (skinRatio < 0.03) {
+      if (!faceVisible) {
         noFaceCountRef.current++;
         if (noFaceCountRef.current >= 5) {
-          handleFaceNotDetected();
+          noFaceCountRef.current = 0;
+          faceViolationsRef.current++;
+          faceWarningRef.current = true;
+          setFaceWarning(true);
+
+          window.speechSynthesis.cancel();
+
+          if (faceViolationsRef.current >= 3) {
+            handleRejected("Face not visible during interview");
+            return;
+          }
+
+          const msg = new SpeechSynthesisUtterance(
+            `I notice your face is not clearly visible. Please ensure your face is on camera. This is warning ${faceViolationsRef.current} of 3.`
+          );
+          window.speechSynthesis.speak(msg);
         }
       } else {
-        if (noFaceCountRef.current > 0) {
-          noFaceCountRef.current = 0;
-          if (faceWarningRef.current) {
-            faceWarningRef.current = false;
-            setFaceWarning(false);
-            speak("Thank you, I can see you now. Let us continue.");
-          }
-        }
-
-        // Gaze anomaly: check face asymmetry (left vs right half skin pixels)
-        let leftSkin = 0, rightSkin = 0;
-        for (let y = 60; y < 180; y++) {
-          for (let x = 80; x < 160; x++) {
-            const idx = (y * 320 + x) * 4;
-            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-            if (r > 60 && g > 40 && b > 20 && r > g && r > b) leftSkin++;
-          }
-          for (let x = 160; x < 240; x++) {
-            const idx = (y * 320 + x) * 4;
-            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-            if (r > 60 && g > 40 && b > 20 && r > g && r > b) rightSkin++;
-          }
-        }
-        const total = leftSkin + rightSkin;
-        if (total > 20) {
-          const asymmetry = Math.abs(leftSkin - rightSkin) / total;
-          if (asymmetry > 0.4) {
-            gazeAnomalyRef.current++;
-            if (gazeAnomalyRef.current >= 6 && !gazeWarnedRef.current) {
-              gazeWarnedRef.current = true;
-              suspiciousRef.current.push("Candidate looking away from camera");
-              speak("Please look directly at the camera as you would in a real interview.");
-            }
-          } else {
-            if (gazeAnomalyRef.current > 0) gazeAnomalyRef.current = Math.max(0, gazeAnomalyRef.current - 1);
-          }
-        }
-
-        // Multiple person detection: count distinct skin clusters in wider frame
-        let clusterPixels = 0;
-        for (let y = 20; y < 220; y += 4) {
-          for (let x = 10; x < 310; x += 4) {
-            const idx = (y * 320 + x) * 4;
-            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-            if (r > 60 && g > 40 && b > 20 && r > g) clusterPixels++;
-          }
-        }
-        if (clusterPixels > 200) {
-          multiPersonCountRef.current++;
-          if (multiPersonCountRef.current >= 3 && !multiPersonWarnedRef.current) {
-            multiPersonWarnedRef.current = true;
-            suspiciousRef.current.push("Multiple people detected in frame");
-            speak("Please ensure you are alone for this interview.");
-          }
-        } else {
-          multiPersonCountRef.current = 0;
+        noFaceCountRef.current = 0;
+        if (faceWarningRef.current) {
+          faceWarningRef.current = false;
+          setFaceWarning(false);
         }
       }
     }, 2000);
@@ -981,20 +948,41 @@ export default function VoiceInterview() {
 
       {/* ════════════════ FACE WARNING OVERLAY ════════════════ */}
       {faceWarning && !["complete", "rejected", "submitting"].includes(phase) && (
-        <div
-          className="absolute inset-0 z-40 flex items-center justify-center"
-          style={{ backgroundColor: "rgba(0,0,0,0.75)" }}
-        >
-          <div className="text-center p-8 max-w-sm w-full">
-            <div className="text-5xl mb-4">👤</div>
-            <h2 className="text-2xl font-bold mb-3" style={{ color: "#F59E0B" }}>
-              Face Not Detected
-            </h2>
-            <p className="text-white mb-2">Please ensure your face is clearly visible on camera.</p>
-            <p className="text-sm" style={{ color: "#F59E0B" }}>
-              Warning {faceViolationCount}/3
-            </p>
-          </div>
+        <div style={{
+          position: "absolute",
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: "rgba(0,0,0,0.85)",
+          zIndex: 50,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 12,
+        }}>
+          <div style={{ fontSize: 48 }}>⚠️</div>
+          <h3 style={{ color: "#EF4444", fontSize: 20, fontWeight: 700 }}>
+            Face Not Detected
+          </h3>
+          <p style={{ color: "white", textAlign: "center", maxWidth: 320 }}>
+            Please ensure your face is clearly visible on camera.
+          </p>
+          <p style={{ color: "#F59E0B", fontSize: 13 }}>
+            Warning {faceViolationsRef.current} of 3
+          </p>
+          <button
+            onClick={() => { faceWarningRef.current = false; setFaceWarning(false); }}
+            style={{
+              background: "#6366F1",
+              border: "none",
+              borderRadius: 8,
+              padding: "10px 24px",
+              color: "white",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            My Face is Visible — Continue
+          </button>
         </div>
       )}
 
