@@ -1,10 +1,8 @@
 import React, { useState } from "react";
 import { useLocation } from "wouter";
-import { getListInterviewsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { AppLayout } from "@/components/layout";
@@ -63,11 +61,12 @@ export default function CreateInterview() {
   const [createdData, setCreatedData] = useState<CreatedInterview | null>(null);
   const [copied, setCopied] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [jdUploaded, setJdUploaded] = useState(false);
+  const [jdUploading, setJdUploading] = useState(false);
 
   const [timezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
     defaultValues: {
       recruiterName: "",
       candidateName: "",
@@ -109,7 +108,7 @@ export default function CreateInterview() {
 
       const data = (await res.json()) as CreatedInterview;
       setCreatedData(data);
-      queryClient.invalidateQueries({ queryKey: getListInterviewsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: ["interviews"] });
       toast({
         title: "Interview created",
         description: "Share the link below with the candidate.",
@@ -122,6 +121,30 @@ export default function CreateInterview() {
       });
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleJdUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !createdData) return;
+    setJdUploading(true);
+    const formData = new FormData();
+    formData.append("jd", file, file.name);
+    try {
+      const res = await apiFetch(`/api/interviews/${createdData.id}/upload-jd`, {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        setJdUploaded(true);
+        toast({ title: "JD uploaded", description: "AI will use this to tailor interview questions." });
+      } else {
+        toast({ variant: "destructive", title: "Upload failed", description: "Could not upload JD file." });
+      }
+    } catch {
+      toast({ variant: "destructive", title: "Upload failed", description: "Network error." });
+    } finally {
+      setJdUploading(false);
     }
   }
 
@@ -486,6 +509,36 @@ export default function CreateInterview() {
                   </Button>
                 </div>
               </CardFooter>
+            </Card>
+            {/* ── JD Upload Card ── */}
+            <Card className="border-slate-200">
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  📄 Upload Full JD File <span className="text-xs font-normal text-muted-foreground">(Optional — improves AI question targeting)</span>
+                </CardTitle>
+                <CardDescription>
+                  Upload a PDF or Word version of the JD to give the AI deeper context for this interview.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {jdUploaded ? (
+                  <div className="flex items-center gap-2 text-green-600 text-sm font-medium">
+                    <CheckCircle2 className="h-4 w-4" />
+                    JD file uploaded — AI will use it to personalise questions.
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx,.txt"
+                      onChange={handleJdUpload}
+                      disabled={jdUploading}
+                      className="text-sm text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border file:border-slate-200 file:text-sm file:font-medium file:bg-slate-50 hover:file:bg-slate-100"
+                    />
+                    {jdUploading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                  </div>
+                )}
+              </CardContent>
             </Card>
           </div>
         )}

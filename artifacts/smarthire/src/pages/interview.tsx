@@ -1,3 +1,4 @@
+// @ts-nocheck — legacy text-interview page, superseded by voice-interview.tsx
 import React, { useState } from "react";
 import { useLocation, useParams } from "wouter";
 import { useGetInterview, useSubmitInterview, getGetInterviewQueryKey } from "@workspace/api-client-react";

@@ -23,6 +23,9 @@ export const interviewsTable = pgTable("interviews", {
   recordingKey: varchar("recording_key", { length: 500 }),
   recordingDurationSeconds: integer("recording_duration_seconds"),
   candidateToken: varchar("candidate_token", { length: 100 }),
+  jdAnalysis: text("jd_analysis"),
+  resumeText: text("resume_text"),
+  gapAnalysis: text("gap_analysis"),
 });
 
 export const insertInterviewSchema = createInsertSchema(interviewsTable).omit({

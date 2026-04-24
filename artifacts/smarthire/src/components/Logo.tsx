@@ -2,10 +2,10 @@ export function Logo({ variant = 'dark', size = 32 }: {
   variant?: 'dark' | 'light',
   size?: number
 }) {
-  const textColor1 = variant === 'dark' ? '#6366F1' : '#ffffff'
-  const textColor2 = variant === 'dark' ? '#0F172A' : '#ffffff'
-  const triangleRed = variant === 'dark' ? '#CE3D3A' : '#ffb0aa'
-  const triangleGray = variant === 'dark' ? '#555555' : '#dddddd'
+  const textColor1 = '#CE3D3A'
+  const textColor2 = '#555555'
+  const triangleRed = '#CE3D3A'
+  const triangleGray = '#555555'
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}

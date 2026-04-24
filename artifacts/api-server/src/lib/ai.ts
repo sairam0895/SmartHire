@@ -12,6 +12,11 @@ export interface GenerateQuestionsResult {
   llmUsed: string;
 }
 
+export interface JdAlignment {
+  mustHaveSkills: Array<{ skill: string; status: "Demonstrated" | "Mentioned" | "Not Shown"; evidence: string }>;
+  overallFit: "Excellent" | "Good" | "Partial" | "Poor";
+}
+
 export interface EvaluationResult {
   overallScore: number;
   verdict: "Strong Hire" | "Hire" | "Maybe" | "No Hire";
@@ -27,6 +32,33 @@ export interface EvaluationResult {
   recommendation: string;
   questionsAsked: number;
   topicsCovered: string[];
+  jdAlignment?: JdAlignment;
+}
+
+// ─── RAG Agent Interfaces ─────────────────────────────────────────────────────
+
+export interface JdAnalysisResult {
+  mustHaveSkills: string[];
+  technicalAreas: string[];
+  probeAreas: string[];
+  experienceLevel: string;
+  behavioralTraits: string[];
+  redFlags: string[];
+}
+
+export interface ResumeParsedResult {
+  skills: string[];
+  experience: string;
+  yearsExp: number;
+  summary: string;
+}
+
+export interface GapAnalysisResult {
+  missingSkills: string[];
+  matchedSkills: string[];
+  areasToProbe: Array<{ area: string; question: string }>;
+  fitScore: number;
+  fitSummary: string;
 }
 
 export async function generateInterviewQuestions(
@@ -79,11 +111,15 @@ export async function evaluateInterview({
   jobDescription,
   conversationHistory,
   durationMinutes,
+  jdAnalysis,
+  gapAnalysis,
 }: {
   jobTitle: string;
   jobDescription: string;
   conversationHistory: Array<{ role: "ai" | "candidate"; text: string }>;
   durationMinutes: number;
+  jdAnalysis?: string | null;
+  gapAnalysis?: string | null;
 }): Promise<EvaluationResult> {
   const transcript = conversationHistory
     .map((m) => `${m.role === "ai" ? "Interviewer" : "Candidate"}: ${m.text}`)
@@ -145,7 +181,7 @@ Return ONLY valid JSON, no markdown, no explanation:
         },
         {
           role: "user",
-          content: `JOB DESCRIPTION:\n${jobDescription}\n\nFULL INTERVIEW TRANSCRIPT:\n${transcript}\n\nDuration: ${durationMinutes} minutes\nTotal messages: ${conversationHistory.length}`,
+          content: `JOB DESCRIPTION:\n${jobDescription}\n\nFULL INTERVIEW TRANSCRIPT:\n${transcript}\n\nDuration: ${durationMinutes} minutes\nTotal messages: ${conversationHistory.length}${jdAnalysis ? `\n\nJD ANALYSIS (use for skill gap assessment):\n${jdAnalysis}` : ""}${gapAnalysis ? `\n\nRESUME GAP ANALYSIS:\n${gapAnalysis}` : ""}`,
         },
       ],
     });
@@ -174,6 +210,98 @@ Return ONLY valid JSON, no markdown, no explanation:
   };
 }
 
+// ─── RAG Agents ──────────────────────────────────────────────────────────────
+
+export async function analyzeJobDescription(
+  jobTitle: string,
+  jobDescription: string
+): Promise<JdAnalysisResult> {
+  const response = await openai.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    max_tokens: 800,
+    temperature: 0.2,
+    messages: [
+      {
+        role: "system",
+        content: `You are an expert recruiter. Analyze the job description and return ONLY valid JSON:
+{
+  "mustHaveSkills": ["skill1"],
+  "technicalAreas": ["area1"],
+  "probeAreas": ["topic to probe"],
+  "experienceLevel": "junior|mid|senior|lead",
+  "behavioralTraits": ["trait1"],
+  "redFlags": ["potential red flag to watch for"]
+}`,
+      },
+      { role: "user", content: `Job Title: ${jobTitle}\n\nJob Description:\n${jobDescription}` },
+    ],
+  });
+  const raw = response.choices[0]?.message?.content ?? "{}";
+  const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("No JSON from JD analysis");
+  return JSON.parse(match[0]) as JdAnalysisResult;
+}
+
+export async function parseResume(resumeText: string): Promise<ResumeParsedResult> {
+  const response = await openai.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    max_tokens: 500,
+    temperature: 0.1,
+    messages: [
+      {
+        role: "system",
+        content: `Extract key information from this resume. Return ONLY valid JSON:
+{
+  "skills": ["skill1"],
+  "experience": "short summary of experience",
+  "yearsExp": 0,
+  "summary": "2-3 sentence professional summary"
+}`,
+      },
+      { role: "user", content: resumeText.slice(0, 4000) },
+    ],
+  });
+  const raw = response.choices[0]?.message?.content ?? "{}";
+  const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("No JSON from resume parse");
+  return JSON.parse(match[0]) as ResumeParsedResult;
+}
+
+export async function analyzeGap(
+  jdAnalysis: JdAnalysisResult,
+  resumeParsed: ResumeParsedResult
+): Promise<GapAnalysisResult> {
+  const response = await openai.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    max_tokens: 800,
+    temperature: 0.2,
+    messages: [
+      {
+        role: "system",
+        content: `You are a recruiter comparing a candidate's resume to a job's requirements. Return ONLY valid JSON:
+{
+  "missingSkills": ["skill not in resume"],
+  "matchedSkills": ["skill present in both"],
+  "areasToProbe": [{ "area": "topic", "question": "specific probing question" }],
+  "fitScore": 7,
+  "fitSummary": "2-sentence summary of fit"
+}`,
+      },
+      {
+        role: "user",
+        content: `JD Requirements:\n${JSON.stringify(jdAnalysis, null, 2)}\n\nCandidate Resume:\n${JSON.stringify(resumeParsed, null, 2)}`,
+      },
+    ],
+  });
+  const raw = response.choices[0]?.message?.content ?? "{}";
+  const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("No JSON from gap analysis");
+  return JSON.parse(match[0]) as GapAnalysisResult;
+}
+
 // ─── Interview Conversation Engine ──────────────────────────────────────────
 
 export interface ConversationMessage {
@@ -192,7 +320,9 @@ export async function generateInterviewConversation(
   jobDescription: string,
   conversationHistory: ConversationMessage[],
   elapsedSeconds: number,
-  durationMinutes: number = 30
+  durationMinutes: number = 30,
+  jdAnalysis?: string | null,
+  gapAnalysis?: string | null
 ): Promise<ConversationResult> {
   const isTestMode = durationMinutes <= 2;
   const wrapUpAt = isTestMode
@@ -293,6 +423,29 @@ FLOW (by elapsed time %):
 95-100%: Wrap up. "This has been such a wonderful conversation. Before I let you go — any questions for me about the role or team?"
 [After candidate responds to closing question → isComplete: true]
 
+TIME MANAGEMENT — CRITICAL:
+
+PHASE BOUNDARIES:
+introEnds = durationSeconds × 0.15
+technicalEnds = durationSeconds × 0.45
+problemSolvingEnds = durationSeconds × 0.60
+behavioralEnds = durationSeconds × 0.75
+wrapupFrom = durationSeconds × 0.85
+
+INTRODUCTION RULE (most critical):
+If elapsedSeconds > durationSeconds × 0.15 AND topicArea is still 'introduction':
+IMMEDIATELY say: "That is wonderful context — I want to make sure we cover all the important areas today. Let me jump in with some specific questions."
+Then ask first technical question from JD.
+NEVER allow intro beyond 15% of total time.
+
+PHASE TRANSITION RULE:
+When elapsed crosses any phase boundary: move to next phase immediately.
+
+MONOLOGUE LIMIT:
+Never allow candidate to speak more than 3 minutes on any single answer.
+If they are going long: "That is really helpful — let me build on [one specific point] and ask you about..."
+Then next question.
+
 NATURAL LANGUAGE (rotate, never repeat):
 Transitions: "That's really interesting...", "I love that you mentioned...", "Building on what you just said...", "Okay, shifting gears a bit...", "Mmm, tell me more about that..."
 Acknowledgements: "Got it.", "Makes sense.", "Absolutely.", "Fair enough.", "Right."
@@ -338,6 +491,18 @@ NEVER USE:
 "As per your response", "Great answer!", "Moving to next question", "Question X of Y", "Thank you for your response", "As an AI"
 
 When elapsedSeconds >= ${wrapUpThresholdSeconds}: start wrapping up naturally.
+${jdAnalysis ? (() => {
+  try {
+    const jd = JSON.parse(jdAnalysis) as { mustHaveSkills?: string[]; probeAreas?: string[]; redFlags?: string[] };
+    return `\nJD INTELLIGENCE:\nMust-have: ${(jd.mustHaveSkills ?? []).join(", ")}\nProbe areas: ${(jd.probeAreas ?? []).join(", ")}\nRed flags: ${(jd.redFlags ?? []).join(", ")}`;
+  } catch { return ""; }
+})() : ""}
+${gapAnalysis ? (() => {
+  try {
+    const gap = JSON.parse(gapAnalysis) as { missingSkills?: string[]; areasToProbe?: Array<{ area: string; question: string }> };
+    return `\nCANDIDATE GAPS (from resume):\nMissing: ${(gap.missingSkills ?? []).join(", ")}\nProbe these specifically:\n${(gap.areasToProbe ?? []).map((a) => `- ${a.question}`).join("\n")}`;
+  } catch { return ""; }
+})() : ""}
 
 Return ONLY JSON no markdown:
 {

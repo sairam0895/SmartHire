@@ -4,7 +4,9 @@
       "Bash(pnpm run:*)",
       "Bash(pnpm --filter \"@workspace/integrations-openai-ai-server\" run build)",
       "Bash(pnpm --filter \"@workspace/api-zod\" run build)",
-      "Bash(pnpm add:*)"
+      "Bash(pnpm add:*)",
+      "Bash(npx tsc *)",
+      "Bash(grep -E \"error|Error|Done|dist\\\\\\\\\")"
     ]
   }
 }

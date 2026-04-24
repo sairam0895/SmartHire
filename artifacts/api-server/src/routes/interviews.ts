@@ -7,7 +7,8 @@ import {
   SubmitInterviewParams,
   GetScorecardParams,
 } from "@workspace/api-zod";
-import { evaluateInterview, generateInterviewConversation } from "../lib/ai";
+import { evaluateInterview, generateInterviewConversation, analyzeJobDescription, parseResume, analyzeGap } from "../lib/ai";
+import { extractText } from "../lib/documentParser";
 import { uploadRecording, getSignedUrl, generateRecordingKey, s3Enabled } from "../lib/s3";
 import { requireAuth } from "../middlewares/requireAuth";
 import { z } from "zod";
@@ -159,6 +160,15 @@ router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
+  // Fire-and-forget JD analysis
+  analyzeJobDescription(jobTitle, jobDescription)
+    .then((analysis) =>
+      db.update(interviewsTable)
+        .set({ jdAnalysis: JSON.stringify(analysis) })
+        .where(eq(interviewsTable.id, interview.id))
+    )
+    .catch(console.error);
+
   res.status(201).json({
     ...interview,
     source: "web",
@@ -247,6 +257,15 @@ const SubmitAnswerInputExtended = z.object({
   speechDurationSeconds: z.number().int().nullable().optional(),
 });
 
+const ProctoringSchema = z.object({
+  tabSwitches: z.number().int().optional(),
+  windowBlurs: z.number().int().optional(),
+  gazeAnomalies: z.number().int().optional(),
+  multiplePersonEvents: z.number().int().optional(),
+  cameraViolations: z.number().int().optional(),
+  suspicious: z.array(z.string()).optional(),
+}).optional();
+
 const SubmitBodyExtended = z.object({
   answers: z.array(SubmitAnswerInputExtended),
   conversationHistory: z.array(z.object({
@@ -255,6 +274,7 @@ const SubmitBodyExtended = z.object({
   })).optional(),
   rejectedReason: z.string().optional(),
   faceViolations: z.number().int().optional(),
+  proctoring: ProctoringSchema,
 });
 
 router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
@@ -280,7 +300,7 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     return;
   }
 
-  const { answers, conversationHistory: rawHistory, rejectedReason, faceViolations } = bodyParsed.data;
+  const { answers, conversationHistory: rawHistory, rejectedReason, faceViolations, proctoring } = bodyParsed.data;
 
   // Handle camera rejection fast path
   if (rejectedReason) {
@@ -333,16 +353,16 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
     { role: "candidate" as const, text: a.answerText },
   ]);
 
-  const conversationHistory =
-    faceViolations && faceViolations > 0
-      ? [
-          {
-            role: "ai" as const,
-            text: `[System Note: Candidate's face was not visible ${faceViolations} time${faceViolations > 1 ? "s" : ""} during the interview. Note this in the recommendation.]`,
-          },
-          ...baseHistory,
-        ]
-      : baseHistory;
+  const systemNotes: Array<{ role: "ai"; text: string }> = [];
+  if (faceViolations && faceViolations > 0) {
+    systemNotes.push({ role: "ai", text: `[System Note: Candidate's face was not visible ${faceViolations} time${faceViolations > 1 ? "s" : ""} during the interview.]` });
+  }
+  if (proctoring?.suspicious && proctoring.suspicious.length > 0) {
+    systemNotes.push({ role: "ai", text: `[Proctoring Alerts: ${proctoring.suspicious.join("; ")}. Tab switches: ${proctoring.tabSwitches ?? 0}, Window blurs: ${proctoring.windowBlurs ?? 0}, Gaze anomalies: ${proctoring.gazeAnomalies ?? 0}]` });
+  }
+  const conversationHistory = systemNotes.length > 0
+    ? [...systemNotes, ...baseHistory]
+    : baseHistory;
 
   const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
 
@@ -353,6 +373,8 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
       jobDescription: interview.jobDescription,
       conversationHistory,
       durationMinutes,
+      jdAnalysis: interview.jdAnalysis,
+      gapAnalysis: interview.gapAnalysis,
     });
   } catch (err) {
     req.log.error({ err }, "Failed to evaluate interview");
@@ -419,6 +441,8 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
       improvements: evaluation.improvements,
       summary: evaluation.recommendation,
       recruiterNote: evaluation.recommendation,
+      proctoringReport: proctoring ? JSON.stringify(proctoring) : null,
+      jdAlignmentReport: evaluation.jdAlignment ? JSON.stringify(evaluation.jdAlignment) : null,
     })
     .returning();
 
@@ -757,7 +781,16 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
     return;
   }
 
-  const { jobTitle, jobDescription, conversationHistory, elapsedSeconds, durationMinutes } = parsed.data;
+  const { interviewId, jobTitle, jobDescription, conversationHistory, elapsedSeconds, durationMinutes } = parsed.data;
+
+  let jdAnalysis: string | null = null;
+  let gapAnalysis: string | null = null;
+  if (interviewId) {
+    const [row] = await db.select({ jdAnalysis: interviewsTable.jdAnalysis, gapAnalysis: interviewsTable.gapAnalysis })
+      .from(interviewsTable).where(eq(interviewsTable.id, interviewId));
+    jdAnalysis = row?.jdAnalysis ?? null;
+    gapAnalysis = row?.gapAnalysis ?? null;
+  }
 
   try {
     const result = await generateInterviewConversation(
@@ -765,7 +798,9 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
       jobDescription,
       conversationHistory,
       elapsedSeconds,
-      durationMinutes ?? 30
+      durationMinutes ?? 30,
+      jdAnalysis,
+      gapAnalysis
     );
     res.json(result);
   } catch (err) {
@@ -773,5 +808,81 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
     res.status(500).json({ error: "Failed to generate next question" });
   }
 });
+
+// ─── Document Upload Routes ───────────────────────────────────────────────────
+
+const docUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+router.post(
+  "/interviews/:id/upload-resume",
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  docUpload.single("resume") as any,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id ?? ""), 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+
+    const file = (req as Express.Request & { file?: Express.Multer.File }).file;
+    if (!file) { res.status(400).json({ error: "No file" }); return; }
+
+    const [interview] = await db.select().from(interviewsTable).where(eq(interviewsTable.id, id));
+    if (!interview) { res.status(404).json({ error: "Interview not found" }); return; }
+
+    try {
+      const text = await extractText(file.buffer, file.mimetype);
+      const resumeParsed = await parseResume(text);
+
+      let gapAnalysis: string | null = null;
+      if (interview.jdAnalysis) {
+        try {
+          const jdParsed = JSON.parse(interview.jdAnalysis) as Parameters<typeof analyzeGap>[0];
+          const gap = await analyzeGap(jdParsed, resumeParsed);
+          gapAnalysis = JSON.stringify(gap);
+        } catch { /* gap analysis optional */ }
+      }
+
+      await db.update(interviewsTable)
+        .set({ resumeText: text, gapAnalysis })
+        .where(eq(interviewsTable.id, id));
+
+      res.json({ success: true, gapAnalysis: gapAnalysis ? JSON.parse(gapAnalysis) : null });
+    } catch (err) {
+      console.error("[upload-resume]", err);
+      res.status(500).json({ error: "Failed to process resume" });
+    }
+  }
+);
+
+router.post(
+  "/interviews/:id/upload-jd",
+  requireAuth,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  docUpload.single("jd") as any,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id ?? ""), 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+
+    const file = (req as Express.Request & { file?: Express.Multer.File }).file;
+    if (!file) { res.status(400).json({ error: "No file" }); return; }
+
+    const [interview] = await db.select().from(interviewsTable).where(eq(interviewsTable.id, id));
+    if (!interview) { res.status(404).json({ error: "Interview not found" }); return; }
+
+    try {
+      const text = await extractText(file.buffer, file.mimetype);
+      const analysis = await analyzeJobDescription(interview.jobTitle, text);
+      const jdAnalysis = JSON.stringify(analysis);
+
+      await db.update(interviewsTable).set({ jdAnalysis }).where(eq(interviewsTable.id, id));
+
+      res.json({ success: true, jdAnalysis: analysis });
+    } catch (err) {
+      console.error("[upload-jd]", err);
+      res.status(500).json({ error: "Failed to process JD" });
+    }
+  }
+);
 
 export default router;

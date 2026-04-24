@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
 import { useParams, Link } from "wouter";
-import { useGetScorecard, getGetScorecardQueryKey } from "@workspace/api-client-react";
 import { format } from "date-fns";
 import { ArrowLeft, Clock, Calendar, Download, AlertCircle, Loader2, Bot, Globe, Mail, Video } from "lucide-react";
 import { AppLayout } from "@/components/layout";
@@ -11,16 +10,59 @@ import { Badge } from "@/components/ui/badge";
 import { apiFetch, apiUrl } from "@/lib/api";
 const PDF_BASE = `${apiUrl}/api`;
 
+interface ScorecardApiResponse {
+  scorecard: {
+    id: number;
+    interviewId: number;
+    technicalScore: number;
+    communicationScore: number;
+    problemSolvingScore: number;
+    roleRelevanceScore: number;
+    speechConfidenceScore?: number | null;
+    overallScore: number;
+    verdict: string;
+    strengths: string[];
+    improvements: string[];
+    summary: string;
+    recruiterNote: string;
+    proctoringReport?: string | null;
+    jdAlignmentReport?: string | null;
+    createdAt: string;
+  };
+  interview: {
+    candidateName: string;
+    jobTitle: string;
+    source?: string;
+    duration?: number | null;
+    llmUsed?: string | null;
+  };
+  questions: Array<{ id: number; questionIndex: number; questionType: string; questionText: string }>;
+  answers: Array<{ questionId: number; answerText?: string; feedback?: string; score?: number | null }>;
+}
+
 export default function ScorecardPage() {
   const params = useParams();
   const id = parseInt(params.id || "0", 10);
 
-  const { data: scorecardData, isLoading, isError } = useGetScorecard(id, {
-    query: {
-      enabled: !!id,
-      queryKey: getGetScorecardQueryKey(id)
-    }
-  });
+  const [scorecardData, setScorecardData] = useState<ScorecardApiResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isError, setIsError] = useState(false);
+
+  useEffect(() => {
+    if (!id) return;
+    setIsLoading(true);
+    setIsError(false);
+    apiFetch(`/api/scorecard/${id}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((data: ScorecardApiResponse) => {
+        setScorecardData(data);
+        setIsLoading(false);
+      })
+      .catch(() => {
+        setIsError(true);
+        setIsLoading(false);
+      });
+  }, [id]);
 
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [recordingDuration, setRecordingDuration] = useState<number | null>(null);
@@ -325,6 +367,97 @@ export default function ScorecardPage() {
             </p>
           )
         )}
+
+        {/* Proctoring Integrity */}
+        {(() => {
+          const raw = (scorecard as { proctoringReport?: string | null }).proctoringReport;
+          if (!raw) return null;
+          let report: { tabSwitches?: number; windowBlurs?: number; gazeAnomalies?: number; multiplePersonEvents?: number; cameraViolations?: number; suspicious?: string[] } | null = null;
+          try { report = JSON.parse(raw); } catch { return null; }
+          if (!report) return null;
+          const flags = (report.suspicious ?? []).length + (report.tabSwitches ?? 0) + (report.cameraViolations ?? 0);
+          const { label, color, bg, border } = flags === 0
+            ? { label: "High Integrity", color: "text-green-700", bg: "bg-green-50", border: "border-green-200" }
+            : flags <= 2
+            ? { label: "Minor Concerns", color: "text-yellow-700", bg: "bg-yellow-50", border: "border-yellow-200" }
+            : { label: "Integrity Concerns", color: "text-red-700", bg: "bg-red-50", border: "border-red-200" };
+          const dot = flags === 0 ? "🟢" : flags <= 2 ? "🟡" : "🔴";
+          return (
+            <div className={`rounded-xl border ${border} ${bg} px-6 py-4 mb-6`}>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-lg">{dot}</span>
+                <h3 className={`font-bold text-base ${color}`}>Proctoring Integrity — {label}</h3>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+                {[
+                  { label: "Tab Switches", value: report.tabSwitches ?? 0 },
+                  { label: "Window Blurs", value: report.windowBlurs ?? 0 },
+                  { label: "Gaze Anomalies", value: report.gazeAnomalies ?? 0 },
+                  { label: "Camera Violations", value: report.cameraViolations ?? 0 },
+                ].map(({ label, value }) => (
+                  <div key={label} className="text-center">
+                    <p className="font-bold text-2xl text-slate-800">{value}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{label}</p>
+                  </div>
+                ))}
+              </div>
+              {(report.suspicious ?? []).length > 0 && (
+                <div className="mt-3 pt-3 border-t border-slate-200">
+                  <p className="text-xs font-semibold text-slate-600 mb-1">Flagged Events</p>
+                  <ul className="space-y-0.5">
+                    {(report.suspicious ?? []).map((s: string, i: number) => (
+                      <li key={i} className="text-xs text-slate-500">• {s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* JD Requirements Match */}
+        {(() => {
+          const raw = (scorecard as { jdAlignmentReport?: string | null }).jdAlignmentReport;
+          if (!raw) return null;
+          let alignment: { mustHaveSkills?: Array<{ skill: string; status: "Demonstrated" | "Mentioned" | "Not Shown"; evidence: string }>; overallFit?: string } | null = null;
+          try { alignment = JSON.parse(raw); } catch { return null; }
+          if (!alignment?.mustHaveSkills?.length) return null;
+          const fitColors: Record<string, string> = {
+            Excellent: "bg-green-100 text-green-800 border-green-200",
+            Good: "bg-indigo-100 text-indigo-800 border-indigo-200",
+            Partial: "bg-orange-100 text-orange-800 border-orange-200",
+            Poor: "bg-red-100 text-red-800 border-red-200",
+          };
+          const statusIcon = (s: string) => s === "Demonstrated" ? "✅" : s === "Mentioned" ? "⚠️" : "❌";
+          return (
+            <div className="bg-white rounded-xl shadow-sm border overflow-hidden mb-6 print:shadow-none print:border">
+              <div className="bg-slate-50 border-b px-6 py-4 flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">JD Requirements Match</h2>
+                {alignment.overallFit && (
+                  <span className={`text-xs font-bold px-3 py-1 rounded-full border ${fitColors[alignment.overallFit] ?? "bg-slate-100 text-slate-600 border-slate-200"}`}>
+                    {alignment.overallFit} Fit
+                  </span>
+                )}
+              </div>
+              <div className="divide-y divide-slate-100">
+                {alignment.mustHaveSkills.map(({ skill, status, evidence }: { skill: string; status: string; evidence: string }, i: number) => (
+                  <div key={i} className="px-6 py-3 flex items-start gap-3">
+                    <span className="text-lg flex-shrink-0 mt-0.5">{statusIcon(status)}</span>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-800">{skill}</p>
+                      {evidence && <p className="text-xs text-slate-500 mt-0.5">{evidence}</p>}
+                    </div>
+                    <span className={`ml-auto flex-shrink-0 text-xs font-medium px-2 py-0.5 rounded ${
+                      status === "Demonstrated" ? "bg-green-50 text-green-700" :
+                      status === "Mentioned" ? "bg-orange-50 text-orange-700" :
+                      "bg-red-50 text-red-700"
+                    }`}>{status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Transcript */}
         <div className="bg-white rounded-xl shadow-sm border overflow-hidden print:shadow-none print:border">

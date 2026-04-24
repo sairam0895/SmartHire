@@ -141,6 +141,18 @@ export default function VoiceInterview() {
   const [faceWarning, setFaceWarning] = useState(false);
   const [faceViolationCount, setFaceViolationCount] = useState(0);
 
+  // Proctoring refs
+  const tabSwitchCountRef = useRef(0);
+  const windowBlurRef = useRef(0);
+  const gazeAnomalyRef = useRef(0);
+  const multiPersonCountRef = useRef(0);
+  const suspiciousRef = useRef<string[]>([]);
+  const gazeWarnedRef = useRef(false);
+  const multiPersonWarnedRef = useRef(false);
+
+  // RAG — resume upload
+  const [resumeUploaded, setResumeUploaded] = useState(false);
+
   // ── Sync helpers ──────────────────────────────────────────────────────────
   const setPhaseSync = useCallback((p: Phase) => {
     phaseRef.current = p;
@@ -317,18 +329,41 @@ export default function VoiceInterview() {
     return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
   }, []);
 
+  // ─── Proctoring event listeners ──────────────────────────────────────────
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden && phaseRef.current !== "complete" && phaseRef.current !== "submitting" && phaseRef.current !== "rejected") {
+        tabSwitchCountRef.current++;
+        suspiciousRef.current.push(`Tab switch #${tabSwitchCountRef.current}`);
+        if (tabSwitchCountRef.current === 2) {
+          speak("Please keep this window active throughout the interview.");
+        }
+      }
+    };
+    const onBlur = () => {
+      if (phaseRef.current !== "complete" && phaseRef.current !== "submitting" && phaseRef.current !== "rejected") {
+        windowBlurRef.current++;
+        suspiciousRef.current.push("Window lost focus");
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", onBlur);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
     if (voices.length === 0) return null;
     return (
-      voices.find((v) => v.name.includes("Heera")) ||       // Microsoft Heera — Indian female
-      voices.find((v) => v.name.includes("Raveena")) ||     // Indian female
-      voices.find((v) => v.name.includes("Neerja")) ||      // Indian female
-      voices.find((v) => v.lang === "en-IN" && v.name.toLowerCase().includes("female")) ||
-      voices.find((v) => v.lang === "en-IN") ||             // Any Indian English
-      voices.find((v) => v.name.includes("Zira")) ||        // Microsoft Zira — US female
-      voices.find((v) => v.name.includes("Susan")) ||       // Female
-      voices.find((v) => v.name.includes("Samantha")) ||    // Female
-      voices.find((v) => v.lang.startsWith("en")) ||        // Any English fallback
+      voices.find((v) => v.name.includes("Heera")) ||
+      voices.find((v) => v.name.includes("Neerja")) ||
+      voices.find((v) => v.lang === "en-IN") ||
+      voices.find((v) => v.name.includes("Zira")) ||
+      voices.find((v) => v.name.includes("Samantha")) ||
+      voices.find((v) => v.lang.startsWith("en")) ||
       null
     );
   }
@@ -340,8 +375,8 @@ export default function VoiceInterview() {
       const doSpeak = () => {
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = "en-IN";
-        utterance.rate = 1.1;
-        utterance.pitch = 1.2;
+        utterance.rate = 1.15;
+        utterance.pitch = 1.4;
         utterance.volume = 1.0;
 
         const voices = voicesRef.current.length > 0
@@ -598,6 +633,55 @@ export default function VoiceInterview() {
             speak("Thank you, I can see you now. Let us continue.");
           }
         }
+
+        // Gaze anomaly: check face asymmetry (left vs right half skin pixels)
+        let leftSkin = 0, rightSkin = 0;
+        for (let y = 60; y < 180; y++) {
+          for (let x = 80; x < 160; x++) {
+            const idx = (y * 320 + x) * 4;
+            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+            if (r > 60 && g > 40 && b > 20 && r > g && r > b) leftSkin++;
+          }
+          for (let x = 160; x < 240; x++) {
+            const idx = (y * 320 + x) * 4;
+            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+            if (r > 60 && g > 40 && b > 20 && r > g && r > b) rightSkin++;
+          }
+        }
+        const total = leftSkin + rightSkin;
+        if (total > 20) {
+          const asymmetry = Math.abs(leftSkin - rightSkin) / total;
+          if (asymmetry > 0.4) {
+            gazeAnomalyRef.current++;
+            if (gazeAnomalyRef.current >= 6 && !gazeWarnedRef.current) {
+              gazeWarnedRef.current = true;
+              suspiciousRef.current.push("Candidate looking away from camera");
+              speak("Please look directly at the camera as you would in a real interview.");
+            }
+          } else {
+            if (gazeAnomalyRef.current > 0) gazeAnomalyRef.current = Math.max(0, gazeAnomalyRef.current - 1);
+          }
+        }
+
+        // Multiple person detection: count distinct skin clusters in wider frame
+        let clusterPixels = 0;
+        for (let y = 20; y < 220; y += 4) {
+          for (let x = 10; x < 310; x += 4) {
+            const idx = (y * 320 + x) * 4;
+            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+            if (r > 60 && g > 40 && b > 20 && r > g) clusterPixels++;
+          }
+        }
+        if (clusterPixels > 200) {
+          multiPersonCountRef.current++;
+          if (multiPersonCountRef.current >= 3 && !multiPersonWarnedRef.current) {
+            multiPersonWarnedRef.current = true;
+            suspiciousRef.current.push("Multiple people detected in frame");
+            speak("Please ensure you are alone for this interview.");
+          }
+        } else {
+          multiPersonCountRef.current = 0;
+        }
       }
     }, 2000);
   }
@@ -646,6 +730,23 @@ export default function VoiceInterview() {
       });
     } catch (err) {
       console.error("[rejected] Failed to submit rejection:", err);
+    }
+  }
+
+  // ─── Resume upload ────────────────────────────────────────────────────────
+  async function handleResumeUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !interviewIdRef.current) return;
+    const formData = new FormData();
+    formData.append("resume", file, file.name);
+    try {
+      const res = await fetch(`${API_BASE}/interviews/${interviewIdRef.current}/upload-resume`, {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) setResumeUploaded(true);
+    } catch (err) {
+      console.warn("[resume] Upload failed:", err);
     }
   }
 
@@ -750,6 +851,11 @@ export default function VoiceInterview() {
     setPhaseSync("submitting");
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
+    if (faceDetectionRef.current) clearInterval(faceDetectionRef.current);
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    setFaceWarning(false);
+    setCameraOff(false);
+    noFaceCountRef.current = 0;
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
@@ -773,24 +879,33 @@ export default function VoiceInterview() {
 
     const interviewId = interviewIdRef.current;
 
-    const uploadPromise = uploadRecording(interviewId);
+    // Upload in background — don't block the thank-you screen
+    uploadRecording(interviewId).catch(console.error);
 
-    const submitPromise: Promise<void> = (async () => {
-      try {
-        const res = await apiFetch(`/api/interviews/${interviewId}/submit`, {
-          method: "POST",
-          body: JSON.stringify({ answers, conversationHistory: conversationRef.current, faceViolations: faceViolationsRef.current }),
-        });
-        if (!res.ok) {
-          const body = await res.text().catch(() => "");
-          throw new Error(`Submit returned ${res.status}: ${body}`);
-        }
-      } catch (err) {
-        console.error("[submit] Failed to submit interview for evaluation:", err);
+    try {
+      const res = await apiFetch(`/api/interviews/${interviewId}/submit`, {
+        method: "POST",
+        body: JSON.stringify({
+          answers,
+          conversationHistory: conversationRef.current,
+          faceViolations: faceViolationsRef.current,
+          proctoring: {
+            tabSwitches: tabSwitchCountRef.current,
+            windowBlurs: windowBlurRef.current,
+            gazeAnomalies: gazeAnomalyRef.current,
+            multiplePersonEvents: multiPersonCountRef.current,
+            cameraViolations: faceViolationsRef.current,
+            suspicious: suspiciousRef.current,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Submit returned ${res.status}: ${body}`);
       }
-    })();
-
-    await Promise.all([uploadPromise, submitPromise]);
+    } catch (err) {
+      console.error("[submit] Failed to submit interview for evaluation:", err);
+    }
 
     setPhaseSync("complete");
   }
@@ -839,7 +954,7 @@ export default function VoiceInterview() {
       )}
 
       {/* ════════════════ CAMERA OFF OVERLAY ════════════════ */}
-      {cameraOff && (
+      {cameraOff && !["complete", "rejected", "submitting"].includes(phase) && (
         <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "rgba(0,0,0,0.92)" }}>
           <div className="text-center p-8 max-w-sm w-full">
             <div className="text-5xl mb-4 animate-pulse">⚠️</div>
@@ -865,7 +980,7 @@ export default function VoiceInterview() {
       )}
 
       {/* ════════════════ FACE WARNING OVERLAY ════════════════ */}
-      {faceWarning && (
+      {faceWarning && !["complete", "rejected", "submitting"].includes(phase) && (
         <div
           className="absolute inset-0 z-40 flex items-center justify-center"
           style={{ backgroundColor: "rgba(0,0,0,0.75)" }}
@@ -962,9 +1077,21 @@ export default function VoiceInterview() {
                 </li>
               ))}
             </ul>
-            <p className="text-gray-500 text-sm mb-6">
+            <p className="text-gray-500 text-sm mb-4">
               By clicking "I Agree &amp; Continue", you consent to this interview being recorded and evaluated.
             </p>
+            <div style={{ border: '1px dashed #334155', borderRadius: 8, padding: 14, marginBottom: 16 }}>
+              <p className="text-gray-400 text-sm mb-2">📄 Upload your resume <span className="text-gray-600">(optional — personalises interview questions)</span></p>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.txt"
+                onChange={handleResumeUpload}
+                className="text-gray-500 text-xs w-full"
+              />
+              {resumeUploaded && (
+                <p className="text-green-400 text-xs mt-2">✓ Resume uploaded — interview personalised</p>
+              )}
+            </div>
             <div className="flex gap-3">
               <button onClick={() => navigate("/")} className="flex-1 py-3 rounded-lg border border-gray-600 text-gray-400 hover:bg-gray-800">
                 Decline
@@ -1036,7 +1163,10 @@ export default function VoiceInterview() {
           <div className="absolute top-0 left-0 right-0 z-10 flex justify-between items-center p-3 sm:p-4">
             <div className="flex items-center gap-2 bg-black/70 backdrop-blur-md rounded-full px-3 py-1.5 border border-white/10">
               <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-white text-xs font-bold tracking-widest">REC</span>
+              <div>
+                <span className="text-white text-xs font-bold tracking-widest">LIVE</span>
+                <span className="text-red-400 text-xs ml-1.5">Proctored</span>
+              </div>
               {recordingChunkCount > 0 && (
                 <span className="text-white/50 text-xs">{(recordingChunkCount * 1000 / (1024 * 1024)).toFixed(1)}MB</span>
               )}
@@ -1079,7 +1209,9 @@ export default function VoiceInterview() {
               <div style={{ position: "absolute", bottom: 2, right: 2, width: 10, height: 10, backgroundColor: "#10B981", borderRadius: "50%", border: "2px solid #1E293B" }} />
             </div>
             <div>
-              <div style={{ color: "white", fontWeight: 600, fontSize: 14 }}>AccionHire</div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>
+                <span style={{ color: "#CE3D3A" }}>Accion</span><span style={{ color: "#555555" }}>Hire</span>
+              </div>
               <div style={{ color: isAISpeaking ? "#6366F1" : "#94A3B8", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
                 {isAISpeaking ? (
                   <>
@@ -1114,7 +1246,9 @@ export default function VoiceInterview() {
                 <div className="bg-blue-950/60 rounded-xl px-4 py-3 border border-blue-700/30">
                   <div className="flex items-center gap-2 mb-1.5">
                     <SpeakingBars color="bg-blue-400" />
-                    <span className="text-blue-400 text-xs font-semibold">AccionHire</span>
+                    <span className="text-xs font-semibold">
+                      <span style={{ color: "#CE3D3A" }}>Accion</span><span style={{ color: "#555555" }}>Hire</span>
+                    </span>
                   </div>
                   <p className="text-white text-sm leading-relaxed line-clamp-3">{aiMessage}</p>
                 </div>

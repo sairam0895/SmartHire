@@ -17,6 +17,8 @@ export const scorecardsTable = pgTable("scorecards", {
   improvements: text("improvements").array().notNull(),
   summary: text("summary").notNull(),
   recruiterNote: text("recruiter_note").notNull(),
+  proctoringReport: text("proctoring_report"),
+  jdAlignmentReport: text("jd_alignment_report"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
