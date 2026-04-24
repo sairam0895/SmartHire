@@ -1,6 +1,8 @@
-// @ts-ignore -- pdf-parse is CJS-only; no ESM default export declaration
-import pdfParse from "pdf-parse";
+import { createRequire } from "module";
 import mammoth from "mammoth";
+
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>;
 
 export async function extractText(buffer: Buffer, mimeType: string): Promise<string> {
   if (mimeType.includes("pdf")) {
