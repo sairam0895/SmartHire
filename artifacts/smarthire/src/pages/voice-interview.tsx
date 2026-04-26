@@ -16,6 +16,7 @@ type Phase =
   | "speaking"
   | "submitting"
   | "complete"
+  | "cancelled"
   | "rejected"
   | "error";
 
@@ -149,6 +150,9 @@ export default function VoiceInterview() {
   const suspiciousRef = useRef<string[]>([]);
   const gazeWarnedRef = useRef(false);
   const multiPersonWarnedRef = useRef(false);
+  const gazeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const multiplePersonIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const gazeConsecutiveRef = useRef(0);
 
   // RAG — resume upload
   const [resumeUploaded, setResumeUploaded] = useState(false);
@@ -229,8 +233,7 @@ export default function VoiceInterview() {
         if (!res.ok) throw new Error("Interview not found");
         const raw = (await res.json()) as InterviewData;
         if (raw.status === "cancelled") {
-          setErrorMsg("This interview has been cancelled. Please contact your recruiter.");
-          setPhaseSync("error");
+          setPhaseSync("cancelled");
           return;
         }
         data = raw;
@@ -262,6 +265,8 @@ export default function VoiceInterview() {
     if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     if (faceDetectionRef.current) clearInterval(faceDetectionRef.current);
+    if (gazeIntervalRef.current) clearInterval(gazeIntervalRef.current);
+    if (multiplePersonIntervalRef.current) clearInterval(multiplePersonIntervalRef.current);
     stopAudioRecorderInternal();
     stopCameraInternal();
     window.speechSynthesis.cancel();
@@ -717,6 +722,110 @@ export default function VoiceInterview() {
     }
   }
 
+  // ─── Integrity score ─────────────────────────────────────────────────────
+  function calculateIntegrityScore(): number {
+    let score = 100;
+    score -= tabSwitchCountRef.current * 10;
+    score -= windowBlurRef.current * 5;
+    score -= faceViolationsRef.current * 15;
+    score -= gazeAnomalyRef.current * 3;
+    score -= multiPersonCountRef.current * 20;
+    return Math.max(0, score);
+  }
+
+  // ─── Gaze detection (every 3 seconds) ───────────────────────────────────
+  function startGazeDetection() {
+    gazeIntervalRef.current = setInterval(() => {
+      if (!videoRef.current) return;
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      canvas.width = 320;
+      canvas.height = 240;
+      ctx.drawImage(videoRef.current, 0, 0, 320, 240);
+      const imageData = ctx.getImageData(0, 0, 320, 240);
+      const data = imageData.data;
+
+      // Measure skin pixel distribution left vs right half
+      let leftSkin = 0, rightSkin = 0;
+      for (let y = 40; y < 180; y++) {
+        for (let x = 80; x < 240; x++) {
+          const idx = (y * 320 + x) * 4;
+          const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+          const isSkin = r > 80 && g > 50 && b > 30 && r > g && r > b && r - b > 15;
+          if (isSkin) {
+            if (x < 160) leftSkin++;
+            else rightSkin++;
+          }
+        }
+      }
+      const total = leftSkin + rightSkin;
+      if (total < 50) return; // not enough face pixels
+      const asymmetry = Math.abs(leftSkin - rightSkin) / total;
+
+      if (asymmetry > 0.45) {
+        gazeConsecutiveRef.current++;
+        if (gazeConsecutiveRef.current >= 4) {
+          gazeConsecutiveRef.current = 0;
+          gazeAnomalyRef.current++;
+          suspiciousRef.current.push(`Gaze anomaly #${gazeAnomalyRef.current}`);
+          if (!gazeWarnedRef.current) {
+            gazeWarnedRef.current = true;
+            speak("Please look directly at the camera.");
+            setTimeout(() => { gazeWarnedRef.current = false; }, 15000);
+          }
+        }
+      } else {
+        gazeConsecutiveRef.current = 0;
+      }
+    }, 3000);
+  }
+
+  // ─── Multiple person detection (every 5 seconds) ─────────────────────────
+  function startMultiplePersonDetection() {
+    multiplePersonIntervalRef.current = setInterval(() => {
+      if (!videoRef.current) return;
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      canvas.width = 320;
+      canvas.height = 240;
+      ctx.drawImage(videoRef.current, 0, 0, 320, 240);
+      const imageData = ctx.getImageData(0, 0, 320, 240);
+      const data = imageData.data;
+
+      // Cluster skin pixels horizontally — detect 2+ distinct clusters
+      const skinCols: boolean[] = new Array(32).fill(false);
+      for (let col = 0; col < 32; col++) {
+        let skinCount = 0;
+        for (let row = 20; row < 200; row++) {
+          const x = col * 10;
+          const idx = (row * 320 + x) * 4;
+          const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+          if (r > 80 && g > 50 && b > 30 && r > g && r > b && r - b > 15) skinCount++;
+        }
+        skinCols[col] = skinCount > 8;
+      }
+      // Count distinct clusters
+      let clusters = 0;
+      let inCluster = false;
+      for (let i = 0; i < 32; i++) {
+        if (skinCols[i] && !inCluster) { clusters++; inCluster = true; }
+        else if (!skinCols[i]) inCluster = false;
+      }
+
+      if (clusters >= 2) {
+        multiPersonCountRef.current++;
+        suspiciousRef.current.push(`Multiple persons detected #${multiPersonCountRef.current}`);
+        if (!multiPersonWarnedRef.current) {
+          multiPersonWarnedRef.current = true;
+          speak("Please ensure you are alone during this interview.");
+          setTimeout(() => { multiPersonWarnedRef.current = false; }, 20000);
+        }
+      }
+    }, 5000);
+  }
+
   // ─── Handle "Allow & Start" button ───────────────────────────────────────
   async function handleRequestPermissions() {
     setPhaseSync("camera-starting");
@@ -725,6 +834,8 @@ export default function VoiceInterview() {
     startElapsedTimer();
     startCameraMonitoring();
     startFaceDetection();
+    startGazeDetection();
+    startMultiplePersonDetection();
 
     setPhaseSync("greeting");
     setAiMessage(GREETING);
@@ -819,6 +930,8 @@ export default function VoiceInterview() {
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
     if (faceDetectionRef.current) clearInterval(faceDetectionRef.current);
+    if (gazeIntervalRef.current) clearInterval(gazeIntervalRef.current);
+    if (multiplePersonIntervalRef.current) clearInterval(multiplePersonIntervalRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     setFaceWarning(false);
     setCameraOff(false);
@@ -859,10 +972,12 @@ export default function VoiceInterview() {
           proctoring: {
             tabSwitches: tabSwitchCountRef.current,
             windowBlurs: windowBlurRef.current,
+            faceViolations: faceViolationsRef.current,
             gazeAnomalies: gazeAnomalyRef.current,
             multiplePersonEvents: multiPersonCountRef.current,
             cameraViolations: faceViolationsRef.current,
             suspicious: suspiciousRef.current,
+            integrityScore: calculateIntegrityScore(),
           },
         }),
       });
@@ -1373,6 +1488,21 @@ export default function VoiceInterview() {
             <p className="text-gray-400 text-sm leading-relaxed">
               Camera was turned off multiple times.<br />
               The recruiting team has been notified.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ CANCELLED ════════════════ */}
+      {phase === "cancelled" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center">
+            <div className="w-24 h-24 rounded-full bg-yellow-500/20 flex items-center justify-center mx-auto mb-6">
+              <span className="text-5xl">🚫</span>
+            </div>
+            <h1 className="text-2xl font-bold text-white mb-3">This Interview Has Been Cancelled</h1>
+            <p className="text-gray-400 text-sm leading-relaxed">
+              Please contact your recruiter for next steps.
             </p>
           </div>
         </div>

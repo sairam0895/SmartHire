@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
 import { db, interviewsTable, questionsTable, answersTable, scorecardsTable } from "@workspace/db";
 import PDFDocument from "pdfkit";
+import { requireAuth } from "../middlewares/requireAuth";
 
 const router: IRouter = Router();
 
@@ -23,6 +24,42 @@ function drawScoreBar(doc: PDFKit.PDFDocument, label: string, score: number, x: 
   const color = score >= 8 ? "#22c55e" : score >= 6 ? "#eab308" : "#ef4444";
   doc.roundedRect(x, barY, fillW, barH, 3).fill(color);
 }
+
+// ─── GET /scorecard/:id — scorecard data for frontend ────────────────────────
+
+router.get("/scorecard/:id", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id ?? "0", 10);
+  if (!id) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  const [interview] = await db.select().from(interviewsTable).where(eq(interviewsTable.id, id));
+  if (!interview) {
+    res.status(404).json({ error: "Interview not found" });
+    return;
+  }
+
+  const [scorecard] = await db.select().from(scorecardsTable).where(eq(scorecardsTable.interviewId, id));
+  const answers = await db.select().from(answersTable).where(eq(answersTable.interviewId, id)).orderBy(answersTable.questionIndex);
+  const questions = await db.select().from(questionsTable).where(eq(questionsTable.interviewId, id)).orderBy(questionsTable.questionIndex);
+
+  res.json({
+    scorecard: scorecard
+      ? { ...scorecard, createdAt: scorecard.createdAt.toISOString() }
+      : null,
+    interview: {
+      ...interview,
+      createdAt: interview.createdAt.toISOString(),
+      completedAt: interview.completedAt ? interview.completedAt.toISOString() : null,
+      scheduledAt: interview.scheduledAt ? interview.scheduledAt.toISOString() : null,
+    },
+    answers,
+    questions,
+  });
+});
+
+// ─── GET /scorecard/:id/pdf ───────────────────────────────────────────────────
 
 router.get("/scorecard/:id/pdf", async (req, res): Promise<void> => {
   const id = parseInt(req.params.id ?? "0", 10);

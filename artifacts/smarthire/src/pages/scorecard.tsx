@@ -10,32 +10,40 @@ import { Badge } from "@/components/ui/badge";
 import { apiFetch, apiUrl } from "@/lib/api";
 const PDF_BASE = `${apiUrl}/api`;
 
+interface ScorecardData {
+  id: number;
+  interviewId: number;
+  technicalScore: number;
+  communicationScore: number;
+  problemSolvingScore: number;
+  roleRelevanceScore: number;
+  culturalFitScore?: number | null;
+  speechConfidenceScore?: number | null;
+  overallScore: number;
+  verdict: string;
+  strengths: string[];
+  improvements: string[];
+  summary: string;
+  recruiterNote: string;
+  proctoringReport?: string | null;
+  jdAlignmentReport?: string | null;
+  createdAt: string;
+}
+
+interface InterviewData {
+  id: number;
+  candidateName: string;
+  jobTitle: string;
+  source?: string;
+  duration?: number | null;
+  llmUsed?: string | null;
+  completedAt?: string | null;
+  monitoringData?: string | null;
+}
+
 interface ScorecardApiResponse {
-  scorecard: {
-    id: number;
-    interviewId: number;
-    technicalScore: number;
-    communicationScore: number;
-    problemSolvingScore: number;
-    roleRelevanceScore: number;
-    speechConfidenceScore?: number | null;
-    overallScore: number;
-    verdict: string;
-    strengths: string[];
-    improvements: string[];
-    summary: string;
-    recruiterNote: string;
-    proctoringReport?: string | null;
-    jdAlignmentReport?: string | null;
-    createdAt: string;
-  };
-  interview: {
-    candidateName: string;
-    jobTitle: string;
-    source?: string;
-    duration?: number | null;
-    llmUsed?: string | null;
-  };
+  scorecard: ScorecardData | null;
+  interview: InterviewData;
   questions: Array<{ id: number; questionIndex: number; questionType: string; questionText: string }>;
   answers: Array<{ questionId: number; answerText?: string; feedback?: string; score?: number | null }>;
 }
@@ -76,9 +84,7 @@ export default function ScorecardPage() {
         setRecordingUrl(data.recordingUrl);
         setRecordingDuration(data.durationSeconds);
       })
-      .catch(() => {
-        // 404 = no recording or S3 not configured — leave recordingUrl null
-      })
+      .catch(() => {})
       .finally(() => setRecordingLoading(false));
   }, [id]);
 
@@ -104,9 +110,30 @@ export default function ScorecardPage() {
           <AlertCircle className="h-12 w-12 text-destructive mb-4" />
           <h2 className="text-xl font-bold mb-2">Scorecard Not Available</h2>
           <p className="text-muted-foreground text-center max-w-md">
-            This interview either hasn't been completed yet, or the scorecard is still generating.
+            Interview not found.
           </p>
           <Button variant="outline" className="mt-6" asChild>
+            <Link href="/">Return to Dashboard</Link>
+          </Button>
+        </div>
+      </AppLayout>
+    );
+  }
+
+  // Evaluation still pending — interview exists but no scorecard yet
+  if (!scorecardData.scorecard) {
+    return (
+      <AppLayout>
+        <div className="flex flex-col items-center justify-center min-h-[60vh]">
+          <Loader2 className="h-12 w-12 text-yellow-500 animate-spin mb-4" />
+          <h2 className="text-xl font-bold mb-2">Evaluation Pending</h2>
+          <p className="text-muted-foreground text-center max-w-md">
+            The interview for <strong>{scorecardData.interview.candidateName}</strong> has been submitted and is being evaluated by AI. This page will show the full report once complete.
+          </p>
+          <Button variant="outline" className="mt-6" onClick={() => window.location.reload()}>
+            Refresh
+          </Button>
+          <Button variant="ghost" size="sm" className="mt-2" asChild>
             <Link href="/">Return to Dashboard</Link>
           </Button>
         </div>
@@ -124,32 +151,38 @@ export default function ScorecardPage() {
     return "bg-red-100 text-red-800 border-red-200";
   };
 
-  const getScoreColorClass = (score: number) => {
+  const getScoreColor = (score: number) => {
+    if (score >= 8) return "#10B981";
+    if (score >= 6) return "#6366F1";
+    return "#EF4444";
+  };
+
+  const getScoreBarClass = (score: number) => {
     if (score >= 8) return "bg-green-500";
-    if (score >= 6) return "bg-orange-400";
+    if (score >= 6) return "bg-indigo-500";
     return "bg-red-500";
   };
 
   const getScoreTextClass = (score: number) => {
     if (score >= 8) return "text-green-600";
-    if (score >= 6) return "text-orange-500";
+    if (score >= 6) return "text-indigo-600";
     return "text-red-600";
   };
 
   const ScoreBar = ({ label, score, isNA = false }: { label: string; score: number | null | undefined; isNA?: boolean }) => (
-    <div className="space-y-2" data-testid={`score-bar-${label.toLowerCase().replace(/\s/g, '-')}`}>
+    <div className="space-y-2">
       <div className="flex justify-between items-center text-sm">
         <span className="font-medium text-slate-700">{label}</span>
         {isNA || score == null ? (
           <span className="text-xs font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded">N/A</span>
         ) : (
-          <span className={`font-bold ${getScoreTextClass(score)}`}>{score.toFixed(1)}/10</span>
+          <span className="font-bold" style={{ color: getScoreColor(score) }}>{score.toFixed(1)}/10</span>
         )}
       </div>
       <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
         {!isNA && score != null ? (
           <div
-            className={`h-full rounded-full transition-all ${getScoreColorClass(score)}`}
+            className={`h-full rounded-full transition-all ${getScoreBarClass(score)}`}
             style={{ width: `${score * 10}%` }}
           />
         ) : (
@@ -169,7 +202,6 @@ export default function ScorecardPage() {
     </Badge>
   );
 
-  // Candidate initials for avatar
   const initials = interview.candidateName
     .split(" ")
     .map((n: string) => n[0])
@@ -183,6 +215,30 @@ export default function ScorecardPage() {
   )}&body=${encodeURIComponent(
     `Interview completed for ${interview.candidateName} for ${interview.jobTitle}. Overall Score: ${scorecard.overallScore.toFixed(1)}/10. Verdict: ${scorecard.verdict}. View full report at: ${reportUrl}`
   )}`;
+
+  // Parse monitoring data
+  let monitoringReport: {
+    answerQuality?: Array<{ authenticityScore?: number }>;
+    consistencyChecks?: Array<{ consistencyScore?: number }>;
+    coachingChecks?: Array<{ coachingLikelihood?: string }>;
+    overallAuthenticityScore?: number;
+    fraudRiskLevel?: "low" | "medium" | "high";
+  } | null = null;
+  try {
+    if (interview.monitoringData) monitoringReport = JSON.parse(interview.monitoringData);
+  } catch { /* ignore */ }
+
+  const avgAuthenticityScore = monitoringReport?.overallAuthenticityScore ??
+    (monitoringReport?.answerQuality?.length
+      ? monitoringReport.answerQuality.reduce((sum, a) => sum + (a.authenticityScore ?? 7), 0) / monitoringReport.answerQuality.length
+      : null);
+
+  const avgConsistencyScore = monitoringReport?.consistencyChecks?.length
+    ? monitoringReport.consistencyChecks.reduce((sum, c) => sum + (c.consistencyScore ?? 8), 0) / monitoringReport.consistencyChecks.length
+    : null;
+
+  const coachingLikelihood = monitoringReport?.coachingChecks?.slice(-1)[0]?.coachingLikelihood ?? "low";
+  const fraudRiskLevel = monitoringReport?.fraudRiskLevel ?? "low";
 
   return (
     <div className="min-h-screen bg-slate-50 pb-12 print:bg-white print:pb-0">
@@ -206,7 +262,6 @@ export default function ScorecardPage() {
               size="sm"
               onClick={handleExportPdf}
               className="gap-2 bg-accent hover:bg-accent/90 text-white"
-              data-testid="button-export-pdf"
             >
               <Download className="h-4 w-4" />
               Export PDF
@@ -218,36 +273,27 @@ export default function ScorecardPage() {
         <div className="bg-white rounded-xl shadow-sm border p-8 mb-6 print:shadow-none print:border-none print:px-0">
           <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
             <div className="flex items-start gap-5">
-              {/* Candidate avatar */}
               <div className="w-16 h-16 rounded-full bg-accent flex items-center justify-center flex-shrink-0 shadow-md">
                 <span className="text-white text-xl font-bold">{initials}</span>
               </div>
               <div>
                 <div className="flex items-center gap-3 mb-2 flex-wrap">
-                  <h1 className="text-3xl font-bold text-slate-900 tracking-tight" data-testid="text-candidate-name">
-                    {interview.candidateName}
-                  </h1>
-                  <Badge variant="outline" className={`px-3 py-1 text-sm font-semibold uppercase tracking-wider ${getVerdictStyle(scorecard.verdict)}`} data-testid="badge-verdict">
+                  <h1 className="text-3xl font-bold text-slate-900 tracking-tight">{interview.candidateName}</h1>
+                  <Badge variant="outline" className={`px-3 py-1 text-sm font-semibold uppercase tracking-wider ${getVerdictStyle(scorecard.verdict)}`}>
                     {scorecard.verdict}
                   </Badge>
                   {sourceBadge}
                 </div>
-                <p className="text-lg text-slate-600 mb-4 font-medium" data-testid="text-job-title">{interview.jobTitle}</p>
-
+                <p className="text-lg text-slate-600 mb-4 font-medium">{interview.jobTitle}</p>
                 <div className="flex items-center gap-6 text-sm text-slate-500 flex-wrap">
                   <div className="flex items-center gap-2 font-medium text-slate-700">
                     <Calendar className="h-4 w-4 text-accent" />
                     {format(new Date(scorecard.createdAt), "MMMM d, yyyy")}
                   </div>
-                  {interview.duration && (
+                  {interview.duration != null && (
                     <div className="flex items-center gap-2 font-medium text-slate-700">
                       <Clock className="h-4 w-4 text-accent" />
                       {Math.round(interview.duration / 60)} mins
-                    </div>
-                  )}
-                  {interview.llmUsed && (
-                    <div className="text-xs text-slate-400">
-                      LLM: {interview.llmUsed === "llama3+gpt" ? "LLaMA 3 + GPT" : "GPT"}
                     </div>
                   )}
                 </div>
@@ -256,7 +302,7 @@ export default function ScorecardPage() {
 
             <div className="bg-slate-50 p-6 rounded-lg border text-center min-w-[200px] shrink-0">
               <p className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-1">Overall Score</p>
-              <div className={`text-5xl font-black ${getScoreTextClass(scorecard.overallScore)}`} data-testid="text-overall-score">
+              <div className="text-5xl font-black" style={{ color: getScoreColor(scorecard.overallScore) }}>
                 {scorecard.overallScore.toFixed(1)}
               </div>
               <p className="text-sm text-slate-500 mt-1">out of 10</p>
@@ -265,16 +311,17 @@ export default function ScorecardPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          {/* Component Scores */}
+          {/* Score Dimensions */}
           <Card className="md:col-span-1 shadow-sm border-slate-200 print:shadow-none print:border">
             <CardHeader className="pb-4">
               <CardTitle className="text-lg">Assessment Breakdown</CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
-              <ScoreBar label="Technical Knowledge" score={scorecard.technicalScore} />
+              <ScoreBar label="Technical Depth" score={scorecard.technicalScore} />
               <ScoreBar label="Problem Solving" score={scorecard.problemSolvingScore} />
-              <ScoreBar label="Communication Clarity" score={scorecard.communicationScore} />
-              <ScoreBar label="Role Relevance" score={scorecard.roleRelevanceScore} />
+              <ScoreBar label="Communication" score={scorecard.communicationScore} />
+              <ScoreBar label="Relevant Experience" score={scorecard.roleRelevanceScore} />
+              <ScoreBar label="Cultural Fit" score={scorecard.culturalFitScore} />
             </CardContent>
           </Card>
 
@@ -284,9 +331,7 @@ export default function ScorecardPage() {
               <CardTitle className="text-lg">Recruiter Summary</CardTitle>
             </CardHeader>
             <CardContent className="pt-6 space-y-6">
-              <div>
-                <p className="text-slate-700 leading-relaxed" data-testid="text-summary">{scorecard.summary}</p>
-              </div>
+              <p className="text-slate-700 leading-relaxed">{scorecard.summary}</p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4 border-t">
                 <div>
@@ -325,57 +370,49 @@ export default function ScorecardPage() {
           </Card>
         </div>
 
-        {/* Interview Recording */}
-        {!recordingLoading && (
-          recordingUrl ? (
-            <div className="bg-white rounded-xl shadow-sm border overflow-hidden mb-6 print:hidden">
-              <div className="bg-slate-50 border-b px-6 py-4 flex items-center justify-between">
-                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <Video className="h-5 w-5 text-accent" />
-                  Interview Recording
-                </h2>
-                {recordingDuration != null && (
-                  <Badge variant="secondary" className="font-mono">
-                    {Math.floor(recordingDuration / 60)}:{String(recordingDuration % 60).padStart(2, "0")}
-                  </Badge>
-                )}
+        {/* AI Monitoring Report */}
+        {monitoringReport && (
+          <div className="bg-white rounded-xl shadow-sm border overflow-hidden mb-6">
+            <div className="bg-slate-50 border-b px-6 py-4">
+              <h2 className="text-lg font-bold text-slate-900">🤖 AI Monitoring Report</h2>
+            </div>
+            <div className="p-6 grid grid-cols-2 sm:grid-cols-4 gap-6">
+              <div className="text-center">
+                <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Answer Authenticity</p>
+                <p className="text-2xl font-bold" style={{ color: avgAuthenticityScore != null ? getScoreColor(avgAuthenticityScore) : "#94A3B8" }}>
+                  {avgAuthenticityScore != null ? `${avgAuthenticityScore.toFixed(1)}/10` : "—"}
+                </p>
               </div>
-              <div className="p-4">
-                <video
-                  src={recordingUrl}
-                  controls
-                  className="w-full rounded-lg"
-                  style={{ maxHeight: "400px", background: "#0f172a" }}
-                />
-                <div className="flex justify-end mt-3">
-                  <Button variant="outline" size="sm" asChild>
-                    <a
-                      href={recordingUrl}
-                      download={`interview-${id}-recording.webm`}
-                      className="gap-2 flex items-center"
-                    >
-                      <Download className="h-4 w-4" />
-                      Download Recording
-                    </a>
-                  </Button>
-                </div>
+              <div className="text-center">
+                <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Consistency</p>
+                <p className="text-2xl font-bold" style={{ color: avgConsistencyScore != null ? getScoreColor(avgConsistencyScore) : "#94A3B8" }}>
+                  {avgConsistencyScore != null ? `${avgConsistencyScore.toFixed(1)}/10` : "—"}
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Coaching Risk</p>
+                <p className={`text-2xl font-bold capitalize ${coachingLikelihood === "high" ? "text-red-600" : coachingLikelihood === "medium" ? "text-yellow-600" : "text-green-600"}`}>
+                  {coachingLikelihood}
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Fraud Risk</p>
+                <p className={`text-2xl font-bold capitalize ${fraudRiskLevel === "high" ? "text-red-600" : fraudRiskLevel === "medium" ? "text-yellow-600" : "text-green-600"}`}>
+                  {fraudRiskLevel}
+                </p>
               </div>
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground text-center mb-4">
-              No recording available for this interview.
-            </p>
-          )
+          </div>
         )}
 
         {/* Proctoring Integrity */}
         {(() => {
-          const raw = (scorecard as { proctoringReport?: string | null }).proctoringReport;
+          const raw = scorecard.proctoringReport;
           if (!raw) return null;
-          let report: { tabSwitches?: number; windowBlurs?: number; gazeAnomalies?: number; multiplePersonEvents?: number; cameraViolations?: number; suspicious?: string[] } | null = null;
+          let report: { tabSwitches?: number; windowBlurs?: number; gazeAnomalies?: number; multiplePersonEvents?: number; cameraViolations?: number; faceViolations?: number; integrityScore?: number; suspicious?: string[] } | null = null;
           try { report = JSON.parse(raw); } catch { return null; }
           if (!report) return null;
-          const flags = (report.suspicious ?? []).length + (report.tabSwitches ?? 0) + (report.cameraViolations ?? 0);
+          const flags = (report.suspicious ?? []).length + (report.tabSwitches ?? 0) + (report.cameraViolations ?? report.faceViolations ?? 0);
           const { label, color, bg, border } = flags === 0
             ? { label: "High Integrity", color: "text-green-700", bg: "bg-green-50", border: "border-green-200" }
             : flags <= 2
@@ -384,16 +421,21 @@ export default function ScorecardPage() {
           const dot = flags === 0 ? "🟢" : flags <= 2 ? "🟡" : "🔴";
           return (
             <div className={`rounded-xl border ${border} ${bg} px-6 py-4 mb-6`}>
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-lg">{dot}</span>
-                <h3 className={`font-bold text-base ${color}`}>Proctoring Integrity — {label}</h3>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">{dot}</span>
+                  <h3 className={`font-bold text-base ${color}`}>Proctoring Integrity — {label}</h3>
+                </div>
+                {report.integrityScore != null && (
+                  <span className={`text-sm font-bold ${color}`}>Score: {report.integrityScore}/100</span>
+                )}
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                 {[
                   { label: "Tab Switches", value: report.tabSwitches ?? 0 },
                   { label: "Window Blurs", value: report.windowBlurs ?? 0 },
                   { label: "Gaze Anomalies", value: report.gazeAnomalies ?? 0 },
-                  { label: "Camera Violations", value: report.cameraViolations ?? 0 },
+                  { label: "Face Violations", value: report.cameraViolations ?? report.faceViolations ?? 0 },
                 ].map(({ label, value }) => (
                   <div key={label} className="text-center">
                     <p className="font-bold text-2xl text-slate-800">{value}</p>
@@ -417,7 +459,7 @@ export default function ScorecardPage() {
 
         {/* JD Requirements Match */}
         {(() => {
-          const raw = (scorecard as { jdAlignmentReport?: string | null }).jdAlignmentReport;
+          const raw = scorecard.jdAlignmentReport;
           if (!raw) return null;
           let alignment: { mustHaveSkills?: Array<{ skill: string; status: "Demonstrated" | "Mentioned" | "Not Shown"; evidence: string }>; overallFit?: string } | null = null;
           try { alignment = JSON.parse(raw); } catch { return null; }
@@ -459,20 +501,55 @@ export default function ScorecardPage() {
           );
         })()}
 
-        {/* Transcript */}
+        {/* Interview Recording */}
+        {!recordingLoading && recordingUrl && (
+          <div className="bg-white rounded-xl shadow-sm border overflow-hidden mb-6 print:hidden">
+            <div className="bg-slate-50 border-b px-6 py-4 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <Video className="h-5 w-5 text-accent" />
+                Interview Recording
+              </h2>
+              {recordingDuration != null && (
+                <Badge variant="secondary" className="font-mono">
+                  {Math.floor(recordingDuration / 60)}:{String(recordingDuration % 60).padStart(2, "0")}
+                </Badge>
+              )}
+            </div>
+            <div className="p-4">
+              <video
+                src={recordingUrl}
+                controls
+                className="w-full rounded-lg"
+                style={{ maxHeight: "400px", background: "#0f172a" }}
+              />
+              <div className="flex justify-end mt-3">
+                <Button variant="outline" size="sm" asChild>
+                  <a href={recordingUrl} download={`interview-${id}-recording.webm`} className="gap-2 flex items-center">
+                    <Download className="h-4 w-4" />
+                    Download Recording
+                  </a>
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Full Transcript */}
         <div className="bg-white rounded-xl shadow-sm border overflow-hidden print:shadow-none print:border">
           <div className="bg-slate-50 border-b px-6 py-4">
             <h2 className="text-lg font-bold text-slate-900">Full Interview Transcript</h2>
           </div>
 
           <div className="divide-y divide-slate-100">
-            {questions.map((q: { id: number; questionIndex: number; questionType: string; questionText: string }) => {
-              const answer = answers.find((a: { questionId: number }) => a.questionId === q.id);
+            {questions.length === 0 && (
+              <div className="p-8 text-center text-slate-400">No transcript available.</div>
+            )}
+            {questions.map((q) => {
+              const answer = answers.find((a) => a.questionId === q.id);
               const answerScore = answer?.score ?? null;
 
               return (
                 <div key={q.id} className="p-6 md:p-8 hover:bg-slate-50/50 transition-colors break-inside-avoid">
-                  {/* Interviewer question */}
                   <div className="flex items-start justify-between gap-4 mb-4">
                     <div className="flex items-start gap-3">
                       <span className="flex-shrink-0 mt-1 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-xs font-semibold rounded whitespace-nowrap">
@@ -489,14 +566,13 @@ export default function ScorecardPage() {
                     </div>
                     {answerScore != null && (
                       <div className="flex-shrink-0 text-center bg-slate-50 border rounded-md px-3 py-2">
-                        <div className={`text-lg font-bold ${getScoreTextClass(answerScore)}`}>
+                        <div className="text-lg font-bold" style={{ color: getScoreColor(answerScore) }}>
                           {answerScore}/10
                         </div>
                       </div>
                     )}
                   </div>
 
-                  {/* Candidate answer */}
                   <div className="space-y-3">
                     <div className="flex items-start gap-3">
                       <span className="flex-shrink-0 mt-1 px-2 py-0.5 bg-slate-100 text-slate-600 text-xs font-semibold rounded whitespace-nowrap">

@@ -7,7 +7,7 @@ import {
   SubmitInterviewParams,
   GetScorecardParams,
 } from "@workspace/api-zod";
-import { evaluateInterview, generateInterviewConversation, analyzeJobDescription, parseResume, analyzeGap } from "../lib/ai";
+import { evaluateInterview, generateInterviewConversation, analyzeJobDescription, parseResume, analyzeGap, monitorAnswerQuality, checkConsistency, detectCoaching } from "../lib/ai";
 import { extractText } from "../lib/documentParser";
 import { uploadRecording, getSignedUrl, generateRecordingKey, s3Enabled } from "../lib/s3";
 import { requireAuth } from "../middlewares/requireAuth";
@@ -260,10 +260,12 @@ const SubmitAnswerInputExtended = z.object({
 const ProctoringSchema = z.object({
   tabSwitches: z.number().int().optional(),
   windowBlurs: z.number().int().optional(),
+  faceViolations: z.number().int().optional(),
   gazeAnomalies: z.number().int().optional(),
   multiplePersonEvents: z.number().int().optional(),
   cameraViolations: z.number().int().optional(),
   suspicious: z.array(z.string()).optional(),
+  integrityScore: z.number().optional(),
 }).optional();
 
 const SubmitBodyExtended = z.object({
@@ -435,6 +437,7 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
       problemSolvingScore: evaluation.scores.problemSolving,
       roleRelevanceScore: evaluation.scores.relevantExperience,
       speechConfidenceScore: null,
+      culturalFitScore: evaluation.scores.culturalFit ?? null,
       overallScore: evaluation.overallScore,
       verdict: evaluation.verdict,
       strengths: evaluation.strengths,
@@ -454,8 +457,12 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
       verdict: evaluation.verdict,
       completedAt: new Date(),
       duration: durationSeconds,
+      evaluationData: JSON.stringify(evaluation),
     })
     .where(eq(interviewsTable.id, params.data.id));
+
+  console.log("Interview updated to completed:", params.data.id);
+  console.log("Evaluation:", JSON.stringify(evaluation));
 
   if (!scorecard) {
     res.status(500).json({ error: "Failed to save scorecard" });
@@ -792,16 +799,64 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
     gapAnalysis = row?.gapAnalysis ?? null;
   }
 
+  const candidateTurns = conversationHistory.filter((m) => m.role === "candidate");
+  const answerCount = candidateTurns.length;
+  const lastAiMsg = conversationHistory.filter((m) => m.role === "ai").slice(-1)[0]?.text ?? "";
+  const lastAnswer = candidateTurns.slice(-1)[0]?.text ?? "";
+
   try {
-    const result = await generateInterviewConversation(
-      jobTitle,
-      jobDescription,
-      conversationHistory,
-      elapsedSeconds,
-      durationMinutes ?? 30,
-      jdAnalysis,
-      gapAnalysis
-    );
+    // Consistency check every 5 answers
+    if (answerCount > 0 && answerCount % 5 === 0) {
+      const consistency = await checkConsistency({ conversationHistory, jobTitle });
+      if (!consistency.consistent && consistency.probeQuestion) {
+        return void res.json({
+          nextQuestion: consistency.probeQuestion,
+          isComplete: false,
+          topicArea: "behavioral",
+          qualityFlag: [`Consistency issue: ${consistency.contradictions.join("; ")}`],
+        });
+      }
+    }
+
+    // Run next question + answer quality in parallel
+    const monitorPromise = lastAnswer
+      ? monitorAnswerQuality({ question: lastAiMsg, answer: lastAnswer, jobTitle })
+      : Promise.resolve(null);
+
+    const [result, qualityResult] = await Promise.all([
+      generateInterviewConversation(jobTitle, jobDescription, conversationHistory, elapsedSeconds, durationMinutes ?? 30, jdAnalysis, gapAnalysis),
+      monitorPromise,
+    ]);
+
+    // If answer quality flags a probe question, override
+    if (qualityResult?.needsProbe && qualityResult.probeQuestion && !result.isComplete) {
+      return void res.json({
+        nextQuestion: qualityResult.probeQuestion,
+        isComplete: false,
+        topicArea: "technical",
+        qualityFlag: qualityResult.flags,
+      });
+    }
+
+    // If AI-generated or scripted, pass hint into result
+    if ((qualityResult?.aiGenerated || qualityResult?.scripted) && !result.isComplete) {
+      result.nextQuestion = `AUTHENTICITY FLAG noted internally. ${result.nextQuestion}`;
+    }
+
+    // Coaching check every 3 answers
+    if (answerCount > 0 && answerCount % 3 === 0) {
+      const recentAnswers = candidateTurns.slice(-3).map((m) => m.text);
+      const coaching = await detectCoaching({ recentAnswers, jobTitle });
+      if (coaching.coachingLikelihood === "high" && coaching.probeQuestion && !result.isComplete) {
+        return void res.json({
+          nextQuestion: coaching.probeQuestion,
+          isComplete: false,
+          topicArea: "technical",
+          qualityFlag: ["Coaching likelihood: high"],
+        });
+      }
+    }
+
     res.json(result);
   } catch (err) {
     req.log.error({ err }, "Failed to generate interview conversation");

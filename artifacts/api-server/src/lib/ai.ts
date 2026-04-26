@@ -442,7 +442,7 @@ PHASE TRANSITION RULE:
 When elapsed crosses any phase boundary: move to next phase immediately.
 
 MONOLOGUE LIMIT:
-Never allow candidate to speak more than 3 minutes on any single answer.
+Never allow candidate to speak more than 5 minutes on any single answer.
 If they are going long: "That is really helpful — let me build on [one specific point] and ask you about..."
 Then next question.
 
@@ -566,6 +566,198 @@ ${
     isComplete: shouldWrapUp || testModeDone,
     topicArea: shouldWrapUp || testModeDone ? "wrapup" : "technical",
   };
+}
+
+// ─── LLM 6 — Answer Quality Monitor ─────────────────────────────────────────
+
+export interface AnswerQualityResult {
+  authentic: boolean;
+  authenticityScore: number;
+  flags: string[];
+  scripted: boolean;
+  aiGenerated: boolean;
+  needsProbe: boolean;
+  probeQuestion: string | null;
+  reasoning: string;
+}
+
+export async function monitorAnswerQuality({
+  question,
+  answer,
+  jobTitle,
+  experienceLevel,
+}: {
+  question: string;
+  answer: string;
+  jobTitle: string;
+  experienceLevel?: string;
+}): Promise<AnswerQualityResult> {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content: `You are an expert interview analyst.
+Analyze this interview answer for authenticity and quality.
+
+Return ONLY valid JSON:
+{
+  "authentic": true,
+  "authenticityScore": 8,
+  "flags": [],
+  "scripted": false,
+  "aiGenerated": false,
+  "needsProbe": false,
+  "probeQuestion": null,
+  "reasoning": "brief explanation"
+}
+
+Flag as scripted/AI if:
+- Perfect STAR structure every time
+- Generic buzzwords without specifics
+- No personal details or emotions
+- Suspiciously comprehensive coverage
+- No natural hesitation or self-correction
+
+Flag as needing probe if:
+- Answer is vague or incomplete
+- Claims expertise without demonstrating it
+- Contradicts likely experience level
+- Too short for complexity of question`,
+        },
+        {
+          role: "user",
+          content: `Job: ${jobTitle}
+Experience Level: ${experienceLevel ?? "unknown"}
+Question: ${question}
+Answer: ${answer}`,
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 400,
+    });
+    const content = response.choices[0]?.message?.content ?? "{}";
+    const clean = content.replace(/```json|```/g, "").trim();
+    return JSON.parse(clean) as AnswerQualityResult;
+  } catch {
+    return { authentic: true, authenticityScore: 7, flags: [], scripted: false, aiGenerated: false, needsProbe: false, probeQuestion: null, reasoning: "" };
+  }
+}
+
+// ─── LLM 7 — Consistency Checker ─────────────────────────────────────────────
+
+export interface ConsistencyResult {
+  consistent: boolean;
+  consistencyScore: number;
+  contradictions: string[];
+  probeQuestion: string | null;
+}
+
+export async function checkConsistency({
+  conversationHistory,
+  jobTitle,
+}: {
+  conversationHistory: Array<{ role: string; text: string }>;
+  jobTitle: string;
+}): Promise<ConsistencyResult> {
+  try {
+    const answers = conversationHistory
+      .filter((m) => m.role === "candidate")
+      .map((m, i) => `Answer ${i + 1}: ${m.text}`)
+      .join("\n\n");
+
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content: `Analyze these interview answers for consistency.
+Find contradictions or inconsistencies.
+
+Return ONLY valid JSON:
+{
+  "consistent": true,
+  "consistencyScore": 9,
+  "contradictions": [],
+  "probeQuestion": null
+}
+
+Contradiction example:
+"Said 3 years experience in answer 1, but mentioned 5 years in answer 3"`,
+        },
+        {
+          role: "user",
+          content: `Job: ${jobTitle}\n\n${answers}`,
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 400,
+    });
+    const content = response.choices[0]?.message?.content ?? "{}";
+    const clean = content.replace(/```json|```/g, "").trim();
+    return JSON.parse(clean) as ConsistencyResult;
+  } catch {
+    return { consistent: true, consistencyScore: 8, contradictions: [], probeQuestion: null };
+  }
+}
+
+// ─── LLM 8 — Coaching Detector ───────────────────────────────────────────────
+
+export interface CoachingResult {
+  coachingLikelihood: "low" | "medium" | "high";
+  confidence: number;
+  evidence: string[];
+  probeQuestion: string | null;
+}
+
+export async function detectCoaching({
+  recentAnswers,
+  jobTitle,
+}: {
+  recentAnswers: string[];
+  jobTitle: string;
+}): Promise<CoachingResult> {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content: `Detect if a candidate is being coached during this interview.
+
+Signs of coaching:
+- Sudden dramatic improvement in answer quality
+- Uses technical terms incorrectly (memorised)
+- Answers sound like they are being read out
+- Style changes dramatically between answers
+- Unnatural pauses mid-answer then perfect completion
+
+Return ONLY valid JSON:
+{
+  "coachingLikelihood": "low",
+  "confidence": 0.2,
+  "evidence": [],
+  "probeQuestion": null
+}
+coachingLikelihood: low | medium | high`,
+        },
+        {
+          role: "user",
+          content: `Job: ${jobTitle}
+Recent answers:
+${recentAnswers.map((a, i) => `[${i + 1}]: ${a}`).join("\n\n")}`,
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 300,
+    });
+    const content = response.choices[0]?.message?.content ?? "{}";
+    const clean = content.replace(/```json|```/g, "").trim();
+    return JSON.parse(clean) as CoachingResult;
+  } catch {
+    return { coachingLikelihood: "low", confidence: 0, evidence: [], probeQuestion: null };
+  }
 }
 
 // ─── LLM Health Checks ───────────────────────────────────────────────────────

@@ -26,6 +26,8 @@ export const interviewsTable = pgTable("interviews", {
   jdAnalysis: text("jd_analysis"),
   resumeText: text("resume_text"),
   gapAnalysis: text("gap_analysis"),
+  evaluationData: text("evaluation_data"),
+  monitoringData: text("monitoring_data"),
 });
 
 export const insertInterviewSchema = createInsertSchema(interviewsTable).omit({
