@@ -28,6 +28,10 @@ export const interviewsTable = pgTable("interviews", {
   gapAnalysis: text("gap_analysis"),
   evaluationData: text("evaluation_data"),
   monitoringData: text("monitoring_data"),
+  conversationState: text("conversation_state"),
+  lastActiveAt: timestamp("last_active_at", { withTimezone: true }),
+  interviewStartedAt: timestamp("interview_started_at", { withTimezone: true }),
+  elapsedSeconds: integer("elapsed_seconds").default(0),
 });
 
 export const insertInterviewSchema = createInsertSchema(interviewsTable).omit({

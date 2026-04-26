@@ -120,6 +120,7 @@ router.get("/interviews", requireAuth, async (req, res): Promise<void> => {
     createdAt: i.createdAt.toISOString(),
     completedAt: i.completedAt ? i.completedAt.toISOString() : null,
     scheduledAt: i.scheduledAt ? i.scheduledAt.toISOString() : null,
+    displayStatus: i.status === "pending" && i.conversationState ? "in_progress" : i.status,
   }));
 
   res.json(mapped);
@@ -198,16 +199,76 @@ router.get("/interviews/token/:token", async (req, res): Promise<void> => {
     return;
   }
 
+  // RULE 1: Cancelled
   if (interview.status === "cancelled") {
-    res.json({ status: "cancelled" });
+    res.json({ access: "cancelled", message: "This interview has been cancelled." });
     return;
   }
 
+  // RULE 2: Already completed
+  if (interview.status === "completed") {
+    res.json({ access: "completed", message: "This interview has already been completed." });
+    return;
+  }
+
+  // Time-based rules — only when scheduledAt is set
+  if (interview.scheduledAt) {
+    const now = new Date();
+    const activateAt = new Date(interview.scheduledAt.getTime() - 10 * 60 * 1000);
+    const expiresAt = new Date(
+      interview.scheduledAt.getTime() +
+      (interview.durationMinutes ?? 30) * 60 * 1000 +
+      30 * 60 * 1000
+    );
+
+    // RULE 3: Too early
+    if (now < activateAt) {
+      const minutesUntil = Math.ceil((activateAt.getTime() - now.getTime()) / 60000);
+      res.json({
+        access: "waiting",
+        minutesUntil,
+        message: `Interview starts in ${minutesUntil} minutes.`,
+        ...interview,
+        createdAt: interview.createdAt.toISOString(),
+        completedAt: interview.completedAt ? interview.completedAt.toISOString() : null,
+        scheduledAt: interview.scheduledAt.toISOString(),
+        lastActiveAt: interview.lastActiveAt ? interview.lastActiveAt.toISOString() : null,
+        interviewStartedAt: interview.interviewStartedAt ? interview.interviewStartedAt.toISOString() : null,
+        conversationState: null,
+        elapsedSeconds: interview.elapsedSeconds ?? 0,
+      });
+      return;
+    }
+
+    // RULE 4: Expired
+    if (now > expiresAt) {
+      res.json({ access: "expired", message: "This interview link has expired." });
+      return;
+    }
+  }
+
+  // RULE 5/6: No scheduledAt (testing) or within window — allow
+  const conversationState = interview.conversationState
+    ? (JSON.parse(interview.conversationState) as unknown)
+    : null;
+
+  const hasActiveSession = !!(
+    interview.conversationState &&
+    interview.status !== "completed" &&
+    interview.status !== "cancelled"
+  );
+
   res.json({
+    access: "allowed",
     ...interview,
     createdAt: interview.createdAt.toISOString(),
     completedAt: interview.completedAt ? interview.completedAt.toISOString() : null,
     scheduledAt: interview.scheduledAt ? interview.scheduledAt.toISOString() : null,
+    lastActiveAt: interview.lastActiveAt ? interview.lastActiveAt.toISOString() : null,
+    interviewStartedAt: interview.interviewStartedAt ? interview.interviewStartedAt.toISOString() : null,
+    conversationState,
+    elapsedSeconds: interview.elapsedSeconds ?? 0,
+    hasActiveSession,
   });
 });
 
@@ -792,11 +853,21 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
 
   let jdAnalysis: string | null = null;
   let gapAnalysis: string | null = null;
+  let interviewStartedAt: Date | null = null;
   if (interviewId) {
-    const [row] = await db.select({ jdAnalysis: interviewsTable.jdAnalysis, gapAnalysis: interviewsTable.gapAnalysis })
+    const [row] = await db
+      .select({ jdAnalysis: interviewsTable.jdAnalysis, gapAnalysis: interviewsTable.gapAnalysis, interviewStartedAt: interviewsTable.interviewStartedAt })
       .from(interviewsTable).where(eq(interviewsTable.id, interviewId));
     jdAnalysis = row?.jdAnalysis ?? null;
     gapAnalysis = row?.gapAnalysis ?? null;
+    interviewStartedAt = row?.interviewStartedAt ?? null;
+
+    // Set interviewStartedAt on first conversation exchange
+    if (!interviewStartedAt && conversationHistory.length <= 2) {
+      await db.update(interviewsTable)
+        .set({ interviewStartedAt: new Date() })
+        .where(eq(interviewsTable.id, interviewId));
+    }
   }
 
   const candidateTurns = conversationHistory.filter((m) => m.role === "candidate");
@@ -857,11 +928,56 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
       }
     }
 
+    // Save conversation state (fire-and-forget)
+    if (interviewId) {
+      db.update(interviewsTable)
+        .set({
+          conversationState: JSON.stringify(conversationHistory),
+          lastActiveAt: new Date(),
+          elapsedSeconds: elapsedSeconds,
+        })
+        .where(eq(interviewsTable.id, interviewId))
+        .catch(console.error);
+    }
+
     res.json(result);
   } catch (err) {
     req.log.error({ err }, "Failed to generate interview conversation");
     res.status(500).json({ error: "Failed to generate next question" });
   }
+});
+
+// ─── Save interview state (auto-save, no auth) ───────────────────────────────
+
+router.post("/interviews/:id/save-state", async (req, res): Promise<void> => {
+  const id = parseInt(String(req.params.id ?? ""), 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+
+  const entrySchema = z.object({ role: z.enum(["ai", "candidate"]), text: z.string() });
+  const body = z.object({
+    conversationState: z.union([z.array(entrySchema), z.null()]),
+    elapsedSeconds: z.number().int(),
+  }).safeParse(req.body);
+
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+
+  const [existing] = await db
+    .select({ interviewStartedAt: interviewsTable.interviewStartedAt })
+    .from(interviewsTable)
+    .where(eq(interviewsTable.id, id));
+
+  await db.update(interviewsTable)
+    .set({
+      conversationState: body.data.conversationState !== null
+        ? JSON.stringify(body.data.conversationState)
+        : null,
+      lastActiveAt: new Date(),
+      elapsedSeconds: body.data.elapsedSeconds,
+      ...(!existing?.interviewStartedAt ? { interviewStartedAt: new Date() } : {}),
+    })
+    .where(eq(interviewsTable.id, id));
+
+  res.json({ saved: true });
 });
 
 // ─── Document Upload Routes ───────────────────────────────────────────────────

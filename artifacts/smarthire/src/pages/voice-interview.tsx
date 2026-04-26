@@ -16,12 +16,16 @@ type Phase =
   | "speaking"
   | "submitting"
   | "complete"
+  | "resume"
+  | "completed-already"
+  | "expired"
   | "cancelled"
   | "rejected"
   | "error";
 
 interface InterviewData {
   id: number;
+  access?: string;
   candidateName: string;
   jobTitle: string;
   jobDescription: string;
@@ -31,6 +35,12 @@ interface InterviewData {
   durationMinutes: number | null;
   timezone: string | null;
   status?: string;
+  conversationState?: ConversationEntry[] | null;
+  elapsedSeconds?: number;
+  interviewStartedAt?: string | null;
+  hasActiveSession?: boolean;
+  minutesUntil?: number;
+  message?: string;
 }
 
 interface ConversationEntry {
@@ -153,6 +163,7 @@ export default function VoiceInterview() {
   const gazeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const multiplePersonIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const gazeConsecutiveRef = useRef(0);
+  const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // RAG — resume upload
   const [resumeUploaded, setResumeUploaded] = useState(false);
@@ -232,11 +243,27 @@ export default function VoiceInterview() {
         const res = await fetch(`${API_BASE}/interviews/token/${urlToken}`);
         if (!res.ok) throw new Error("Interview not found");
         const raw = (await res.json()) as InterviewData;
-        if (raw.status === "cancelled") {
-          setPhaseSync("cancelled");
-          return;
+
+        switch (raw.access) {
+          case "cancelled":
+            setPhaseSync("cancelled");
+            return;
+          case "completed":
+            setPhaseSync("completed-already");
+            return;
+          case "expired":
+            setPhaseSync("expired");
+            return;
+          case "waiting":
+            setInterview(raw);
+            interviewRef.current = raw;
+            interviewIdRef.current = raw.id;
+            setWaitingSecondsLeft(secondsUntilActive(raw.scheduledAt!));
+            setPhaseSync("waiting");
+            return;
+          default:
+            data = raw;
         }
-        data = raw;
       } else {
         const res = await fetch(`${API_BASE}/livekit/interview/${urlId}`);
         if (!res.ok) throw new Error("Interview not found");
@@ -247,7 +274,16 @@ export default function VoiceInterview() {
       interviewRef.current = data;
       interviewIdRef.current = data.id;
 
-      if (data.scheduledAt && secondsUntilActive(data.scheduledAt) > 0) {
+      // Resume after disconnect — existing session detected
+      const hasSession =
+        data.hasActiveSession &&
+        data.conversationState &&
+        data.conversationState.length > 0 &&
+        (data.elapsedSeconds ?? 0) > 60;
+
+      if (hasSession) {
+        setPhaseSync("resume");
+      } else if (data.scheduledAt && secondsUntilActive(data.scheduledAt) > 0) {
         setWaitingSecondsLeft(secondsUntilActive(data.scheduledAt));
         setPhaseSync("waiting");
       } else {
@@ -267,6 +303,7 @@ export default function VoiceInterview() {
     if (faceDetectionRef.current) clearInterval(faceDetectionRef.current);
     if (gazeIntervalRef.current) clearInterval(gazeIntervalRef.current);
     if (multiplePersonIntervalRef.current) clearInterval(multiplePersonIntervalRef.current);
+    if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
     stopAudioRecorderInternal();
     stopCameraInternal();
     window.speechSynthesis.cancel();
@@ -722,6 +759,72 @@ export default function VoiceInterview() {
     }
   }
 
+  // ─── Auto-save session state ─────────────────────────────────────────────
+  function startAutoSave(interviewId: number) {
+    if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
+    autoSaveIntervalRef.current = setInterval(() => {
+      const state = conversationRef.current;
+      const elapsed = elapsedSecondsRef.current;
+      if (state.length === 0) return;
+      fetch(`${API_BASE}/interviews/${interviewId}/save-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationState: state, elapsedSeconds: elapsed }),
+      }).catch(() => {/* ignore */});
+    }, 30000);
+  }
+
+  // ─── Resume after disconnect ──────────────────────────────────────────────
+  async function resumeInterview() {
+    const data = interviewRef.current!;
+    if (data.conversationState && data.conversationState.length > 0) {
+      conversationRef.current = data.conversationState;
+      setConversationHistory([...data.conversationState]);
+    }
+    if (data.elapsedSeconds) {
+      elapsedSecondsRef.current = data.elapsedSeconds;
+      setElapsedSeconds(data.elapsedSeconds);
+    }
+
+    setPhaseSync("camera-starting");
+    await startCamera();
+    startRecording();
+    startElapsedTimer();
+    startCameraMonitoring();
+    startFaceDetection();
+    startGazeDetection();
+    startMultiplePersonDetection();
+    startAutoSave(data.id);
+
+    const lastAiMsg = conversationRef.current.filter((e) => e.role === "ai").at(-1)?.text;
+    const resumeMsg = lastAiMsg
+      ? `Welcome back! Let us continue. My last question was: ${lastAiMsg}`
+      : "Welcome back! Let us continue the interview.";
+
+    setPhaseSync("speaking");
+    setAiMessage(resumeMsg);
+    addToConversation({ role: "ai", text: resumeMsg });
+    await speak(resumeMsg);
+    setPhaseSync("listening");
+    startListening();
+  }
+
+  // ─── Start fresh (discard previous session) ───────────────────────────────
+  async function startFresh() {
+    const data = interviewRef.current!;
+    fetch(`${API_BASE}/interviews/${data.id}/save-state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationState: [], elapsedSeconds: 0 }),
+    }).catch(() => {/* ignore */});
+    conversationRef.current = [];
+    setConversationHistory([]);
+    elapsedSecondsRef.current = 0;
+    setElapsedSeconds(0);
+    setHasConsented(false);
+    setPhaseSync("permissions");
+  }
+
   // ─── Integrity score ─────────────────────────────────────────────────────
   function calculateIntegrityScore(): number {
     let score = 100;
@@ -836,6 +939,7 @@ export default function VoiceInterview() {
     startFaceDetection();
     startGazeDetection();
     startMultiplePersonDetection();
+    startAutoSave(interviewIdRef.current);
 
     setPhaseSync("greeting");
     setAiMessage(GREETING);
@@ -933,6 +1037,7 @@ export default function VoiceInterview() {
     if (gazeIntervalRef.current) clearInterval(gazeIntervalRef.current);
     if (multiplePersonIntervalRef.current) clearInterval(multiplePersonIntervalRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
+    if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
     setFaceWarning(false);
     setCameraOff(false);
     noFaceCountRef.current = 0;
@@ -1488,6 +1593,88 @@ export default function VoiceInterview() {
             <p className="text-gray-400 text-sm leading-relaxed">
               Camera was turned off multiple times.<br />
               The recruiting team has been notified.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ RESUME AFTER DISCONNECT ════════════════ */}
+      {phase === "resume" && interview && (
+        <div style={{ minHeight: "100vh", backgroundColor: "#0F172A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ background: "#1E293B", borderRadius: 20, padding: 48, maxWidth: 480, width: "100%", textAlign: "center", border: "1px solid #334155" }}>
+            <div style={{ fontSize: 56, marginBottom: 20 }}>🔄</div>
+            <h2 style={{ color: "white", fontSize: 26, fontWeight: 800, marginBottom: 12 }}>
+              Welcome Back!
+            </h2>
+            <p style={{ color: "#94A3B8", lineHeight: 1.7, marginBottom: 8, fontSize: 15 }}>
+              It looks like your interview was interrupted.<br />
+              Don&apos;t worry — your progress has been saved!
+            </p>
+            <div style={{ background: "rgba(99,102,241,0.1)", border: "1px solid #6366F1", borderRadius: 10, padding: "12px 20px", margin: "20px 0", display: "flex", justifyContent: "center", gap: 24 }}>
+              <div>
+                <div style={{ color: "#6366F1", fontSize: 22, fontWeight: 700 }}>
+                  {Math.floor((interview.elapsedSeconds ?? 0) / 60)}:{String((interview.elapsedSeconds ?? 0) % 60).padStart(2, "0")}
+                </div>
+                <div style={{ color: "#64748B", fontSize: 11 }}>completed</div>
+              </div>
+              <div style={{ width: 1, background: "#334155" }} />
+              <div>
+                <div style={{ color: "#6366F1", fontSize: 22, fontWeight: 700 }}>
+                  {interview.conversationState?.filter((m) => m.role === "candidate").length ?? 0}
+                </div>
+                <div style={{ color: "#64748B", fontSize: 11 }}>answers saved</div>
+              </div>
+            </div>
+            <p style={{ color: "#64748B", fontSize: 12, marginBottom: 28 }}>
+              Click &quot;Resume&quot; to continue from where you left off.
+            </p>
+            <div style={{ display: "flex", gap: 12 }}>
+              <button
+                onClick={resumeInterview}
+                style={{ flex: 2, background: "#6366F1", border: "none", borderRadius: 10, padding: 14, color: "white", fontWeight: 700, cursor: "pointer", fontSize: 15 }}
+              >
+                ▶ Resume Interview
+              </button>
+              <button
+                onClick={startFresh}
+                style={{ flex: 1, background: "transparent", border: "1px solid #334155", borderRadius: 10, padding: 14, color: "#64748B", cursor: "pointer", fontSize: 13 }}
+              >
+                Start Over
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ COMPLETED ALREADY ════════════════ */}
+      {phase === "completed-already" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center">
+            <div className="w-24 h-24 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-6">
+              <svg className="w-12 h-12 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <h1 className="text-2xl font-bold text-white mb-3">Interview Already Completed</h1>
+            <p className="text-gray-400 text-sm leading-relaxed">
+              You have already completed this interview.<br />
+              The recruiting team will be in touch with you shortly.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ EXPIRED ════════════════ */}
+      {phase === "expired" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center">
+            <div className="w-24 h-24 rounded-full bg-orange-500/20 flex items-center justify-center mx-auto mb-6">
+              <span className="text-5xl">⏰</span>
+            </div>
+            <h1 className="text-2xl font-bold text-white mb-3">Interview Link Expired</h1>
+            <p className="text-gray-400 text-sm leading-relaxed">
+              This interview link has expired.<br />
+              Please contact your recruiter to reschedule.
             </p>
           </div>
         </div>

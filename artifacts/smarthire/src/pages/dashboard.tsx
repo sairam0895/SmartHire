@@ -66,6 +66,7 @@ interface Interview {
   recruiterName: string;
   jobTitle: string;
   status: string;
+  displayStatus?: string;
   source: string | null;
   llmUsed: string | null;
   overallScore: number | null;
@@ -567,7 +568,7 @@ export default function Dashboard() {
                           </TableCell>
                           <TableCell>{getSourceBadge(interview.source)}</TableCell>
                           <TableCell>{getLlmBadge(interview.llmUsed)}</TableCell>
-                          <TableCell>{getStatusBadge(interview.status, interview.scheduledAt)}</TableCell>
+                          <TableCell>{getStatusBadge(interview.displayStatus ?? interview.status, interview.scheduledAt)}</TableCell>
                           <TableCell className="text-right">
                             <span className={getScoreColorClass(interview.overallScore)}>
                               {interview.overallScore ? interview.overallScore.toFixed(1) : "-"}
