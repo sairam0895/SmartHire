@@ -39,6 +39,8 @@ interface InterviewData {
   llmUsed?: string | null;
   completedAt?: string | null;
   monitoringData?: string | null;
+  persona?: string | null;
+  personaName?: string | null;
 }
 
 interface ScorecardApiResponse {
@@ -284,7 +286,23 @@ export default function ScorecardPage() {
                   </Badge>
                   {sourceBadge}
                 </div>
-                <p className="text-lg text-slate-600 mb-4 font-medium">{interview.jobTitle}</p>
+                <p className="text-lg text-slate-600 mb-2 font-medium">{interview.jobTitle}</p>
+                {interview.persona && interview.personaName && (
+                  <div className="flex items-center gap-2 text-sm mb-3">
+                    <div style={{
+                      width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+                      backgroundColor: ({ technical: '#6366F1', hr: '#0D9488', leadership: '#1E3A5F', sales: '#EA580C' } as Record<string, string>)[interview.persona] ?? '#6366F1',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 10, fontWeight: 700, color: 'white',
+                    }}>
+                      {interview.personaName[0]}
+                    </div>
+                    <span className="text-slate-500">
+                      Interviewed by <span className="font-semibold text-slate-700">{interview.personaName}</span>
+                      {({ technical: ' · Senior Technical Interviewer', hr: ' · People & Culture Specialist', leadership: ' · Senior Leadership Assessor', sales: ' · Business Excellence Interviewer' } as Record<string, string>)[interview.persona]}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center gap-6 text-sm text-slate-500 flex-wrap">
                   <div className="flex items-center gap-2 font-medium text-slate-700">
                     <Calendar className="h-4 w-4 text-accent" />

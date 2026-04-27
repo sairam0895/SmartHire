@@ -30,6 +30,28 @@ import { Separator } from "@/components/ui/separator";
 import { Loader2, Copy, Check, ExternalLink, ArrowRight, Mail, Calendar, Clock, CheckCircle2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
+type PersonaKey = 'technical' | 'hr' | 'leadership' | 'sales';
+
+const PERSONA_DISPLAY: Record<PersonaKey, { name: string; title: string; color: string; bg: string; text: string; description: string }> = {
+  technical: { name: 'Priya', title: 'Senior Technical Interviewer', color: '#6366F1', bg: '#EDE9FE', text: '#6D28D9', description: 'Sharp, technical, digs deep into implementation and problem-solving' },
+  hr:        { name: 'Meera', title: 'People & Culture Specialist',  color: '#0D9488', bg: '#CCFBF1', text: '#0F766E', description: 'Warm, empathetic, focuses on behavioral and cultural fit' },
+  leadership:{ name: 'Arjun', title: 'Senior Leadership Assessor',   color: '#1E3A5F', bg: '#DBEAFE', text: '#1E3A5F', description: 'Strategic, authoritative, probes leadership philosophy and decisions' },
+  sales:     { name: 'Kavya', title: 'Business Excellence Interviewer', color: '#EA580C', bg: '#FFEDD5', text: '#C2410C', description: 'Energetic, target-driven, focuses on revenue and client relationships' },
+};
+
+function detectPersonaClientSide(jobTitle: string, jobDescription: string): PersonaKey {
+  const t = jobTitle.toLowerCase();
+  const j = jobDescription.toLowerCase();
+  const has = (keywords: string[], checkJd = true) =>
+    keywords.some((k) => t.includes(k) || (checkJd && j.includes(k)));
+
+  if (has(['manager', 'director', 'vp', 'vice president', 'head', 'lead', 'chief', 'cto', 'ceo', 'coo', 'president', 'founder', 'principal', 'senior lead'], false)) return 'leadership';
+  if (has(['engineer', 'developer', 'qa', 'tester', 'devops', 'data', 'architect', 'programmer', 'technical', 'software', 'frontend', 'backend', 'fullstack', 'cloud', 'security', 'mobile', 'ios', 'android'])) return 'technical';
+  if (has(['sales', 'business development', 'account', 'marketing', 'growth', 'revenue', 'client', 'customer success', 'partnership', 'bd'])) return 'sales';
+  if (has(['hr', 'human resources', 'people', 'talent', 'recruiter', 'culture', 'operations', 'admin', 'coordinator', 'specialist', 'generalist'])) return 'hr';
+  return 'technical';
+}
+
 const formSchema = z.object({
   recruiterName: z.string().min(2, "Recruiter name is required"),
   candidateName: z.string().min(2, "Candidate name is required"),
@@ -39,6 +61,7 @@ const formSchema = z.object({
   interviewDate: z.string().optional(),
   interviewTime: z.string().optional(),
   durationMinutes: z.number().int().optional(),
+  personaOverride: z.enum(['technical', 'hr', 'leadership', 'sales'] as const).optional(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -76,8 +99,18 @@ export default function CreateInterview() {
       interviewDate: "",
       interviewTime: "",
       durationMinutes: 30,
+      personaOverride: undefined,
     },
   });
+
+  const watchedTitle = form.watch("jobTitle");
+  const watchedJd = form.watch("jobDescription");
+  const watchedOverride = form.watch("personaOverride");
+
+  const detectedPersona: PersonaKey = detectPersonaClientSide(watchedTitle ?? "", watchedJd ?? "");
+  const activePersona: PersonaKey = watchedOverride ?? detectedPersona;
+  const activePersonaDisplay = PERSONA_DISPLAY[activePersona];
+  const showPersonaPreview = (watchedTitle?.length ?? 0) >= 2 || (watchedJd?.length ?? 0) >= 10;
 
   async function onSubmit(values: FormValues) {
     setIsSubmitting(true);
@@ -98,6 +131,7 @@ export default function CreateInterview() {
           scheduledAt,
           durationMinutes: values.durationMinutes ?? 30,
           timezone,
+          personaOverride: values.personaOverride ?? undefined,
         }),
       });
 
@@ -305,6 +339,58 @@ export default function CreateInterview() {
                       </FormItem>
                     )}
                   />
+
+                  {/* Persona Preview */}
+                  {showPersonaPreview && (
+                    <div style={{ border: `1px solid ${activePersonaDisplay.color}40`, borderRadius: 12, padding: 16, backgroundColor: `${activePersonaDisplay.color}08` }}>
+                      <p className="text-xs text-muted-foreground mb-3 font-medium uppercase tracking-wide">
+                        Based on this JD, your interview will be conducted by:
+                      </p>
+                      <div className="flex items-start gap-3">
+                        <div style={{ width: 40, height: 40, borderRadius: '50%', backgroundColor: activePersonaDisplay.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, color: 'white', flexShrink: 0 }}>
+                          {activePersonaDisplay.name[0]}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-sm">{activePersonaDisplay.name}</span>
+                            <span style={{ fontSize: 11, padding: '1px 8px', borderRadius: 10, backgroundColor: activePersonaDisplay.bg, color: activePersonaDisplay.text, fontWeight: 600 }}>
+                              {activePersonaDisplay.title}
+                            </span>
+                            {watchedOverride && (
+                              <span className="text-xs text-muted-foreground italic">(manual override)</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-1">{activePersonaDisplay.description}</p>
+                        </div>
+                      </div>
+                      <FormField
+                        control={form.control}
+                        name="personaOverride"
+                        render={({ field }) => (
+                          <FormItem className="mt-3">
+                            <div className="flex items-center gap-2">
+                              <Select
+                                onValueChange={(v) => field.onChange(v === 'auto' ? undefined : v)}
+                                value={field.value ?? 'auto'}
+                              >
+                                <SelectTrigger className="h-8 text-xs w-auto min-w-[180px]">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="auto">Auto-detect (recommended)</SelectItem>
+                                  <SelectItem value="technical">Priya — Technical</SelectItem>
+                                  <SelectItem value="hr">Meera — HR &amp; Culture</SelectItem>
+                                  <SelectItem value="leadership">Arjun — Leadership</SelectItem>
+                                  <SelectItem value="sales">Kavya — Sales &amp; Business</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <span className="text-xs text-muted-foreground">Change interviewer</span>
+                            </div>
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  )}
 
                   <Separator />
 

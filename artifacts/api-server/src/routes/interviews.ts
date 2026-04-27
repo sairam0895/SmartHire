@@ -7,7 +7,7 @@ import {
   SubmitInterviewParams,
   GetScorecardParams,
 } from "@workspace/api-zod";
-import { evaluateInterview, generateInterviewConversation, analyzeJobDescription, parseResume, analyzeGap, monitorAnswerQuality, checkConsistency, detectCoaching } from "../lib/ai";
+import { evaluateInterview, generateInterviewConversation, analyzeJobDescription, parseResume, analyzeGap, monitorAnswerQuality, checkConsistency, detectCoaching, detectPersona, PERSONAS } from "../lib/ai";
 import { extractText } from "../lib/documentParser";
 import { uploadRecording, getSignedUrl, generateRecordingKey, s3Enabled } from "../lib/s3";
 import { requireAuth } from "../middlewares/requireAuth";
@@ -16,6 +16,10 @@ import multer from "multer";
 import { randomUUID } from "crypto";
 
 const router: IRouter = Router();
+
+const CreateInterviewBodyWithPersona = CreateInterviewBody.extend({
+  personaOverride: z.enum(['technical', 'hr', 'leadership', 'sales'] as const).optional(),
+});
 
 // ─── Stats ───────────────────────────────────────────────────────────────────
 
@@ -129,13 +133,13 @@ router.get("/interviews", requireAuth, async (req, res): Promise<void> => {
 // ─── Create interview ─────────────────────────────────────────────────────────
 
 router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
-  const parsed = CreateInterviewBody.safeParse(req.body);
+  const parsed = CreateInterviewBodyWithPersona.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
 
-  const { recruiterName, candidateName, candidateEmail, jobTitle, jobDescription, scheduledAt, durationMinutes, timezone } = parsed.data;
+  const { recruiterName, candidateName, candidateEmail, jobTitle, jobDescription, scheduledAt, durationMinutes, timezone, personaOverride } = parsed.data;
 
   const candidateToken = randomUUID() + randomUUID();
 
@@ -169,6 +173,24 @@ router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
         .where(eq(interviewsTable.id, interview.id))
     )
     .catch(console.error);
+
+  // Fire-and-forget persona detection (or use override if provided)
+  if (personaOverride) {
+    const personaConfig = PERSONAS[personaOverride as keyof typeof PERSONAS];
+    db.update(interviewsTable)
+      .set({ persona: personaOverride, personaName: personaConfig.name })
+      .where(eq(interviewsTable.id, interview.id))
+      .catch(console.error);
+  } else {
+    detectPersona(jobTitle, jobDescription)
+      .then((persona) => {
+        const personaConfig = PERSONAS[persona];
+        return db.update(interviewsTable)
+          .set({ persona, personaName: personaConfig.name })
+          .where(eq(interviewsTable.id, interview.id));
+      })
+      .catch(console.error);
+  }
 
   res.status(201).json({
     ...interview,
@@ -912,13 +934,19 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
   let jdAnalysis: string | null = null;
   let gapAnalysis: string | null = null;
   let interviewStartedAt: Date | null = null;
+  let personaConfig: typeof PERSONAS[keyof typeof PERSONAS] = PERSONAS.technical;
   if (interviewId) {
     const [row] = await db
-      .select({ jdAnalysis: interviewsTable.jdAnalysis, gapAnalysis: interviewsTable.gapAnalysis, interviewStartedAt: interviewsTable.interviewStartedAt })
+      .select({ jdAnalysis: interviewsTable.jdAnalysis, gapAnalysis: interviewsTable.gapAnalysis, interviewStartedAt: interviewsTable.interviewStartedAt, persona: interviewsTable.persona })
       .from(interviewsTable).where(eq(interviewsTable.id, interviewId));
     jdAnalysis = row?.jdAnalysis ?? null;
     gapAnalysis = row?.gapAnalysis ?? null;
     interviewStartedAt = row?.interviewStartedAt ?? null;
+    const rawPersona = String(row?.persona ?? 'technical');
+    const personaKey: keyof typeof PERSONAS = rawPersona in PERSONAS
+      ? (rawPersona as keyof typeof PERSONAS)
+      : 'technical';
+    personaConfig = PERSONAS[personaKey];
 
     // Set interviewStartedAt on first conversation exchange
     if (!interviewStartedAt && conversationHistory.length <= 2) {
@@ -953,7 +981,7 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
       : Promise.resolve(null);
 
     const [result, qualityResult] = await Promise.all([
-      generateInterviewConversation(jobTitle, jobDescription, conversationHistory, elapsedSeconds, durationMinutes ?? 30, jdAnalysis, gapAnalysis),
+      generateInterviewConversation(jobTitle, jobDescription, conversationHistory, elapsedSeconds, durationMinutes ?? 30, jdAnalysis, gapAnalysis, personaConfig),
       monitorPromise,
     ]);
 

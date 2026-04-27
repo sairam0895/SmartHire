@@ -76,6 +76,8 @@ interface Interview {
   scheduledAt: string | null;
   candidateToken: string | null;
   durationMinutes: number | null;
+  persona?: string | null;
+  personaName?: string | null;
 }
 
 interface InterviewStats {
@@ -569,6 +571,7 @@ export default function Dashboard() {
                       <TableRow>
                         <TableHead>Candidate</TableHead>
                         <TableHead>Role</TableHead>
+                        <TableHead>Interviewer</TableHead>
                         <TableHead>Scheduled</TableHead>
                         <TableHead>Created</TableHead>
                         <TableHead>Source</TableHead>
@@ -589,6 +592,20 @@ export default function Dashboard() {
                         >
                           <TableCell className="font-medium">{interview.candidateName}</TableCell>
                           <TableCell>{interview.jobTitle}</TableCell>
+                          <TableCell>
+                            {interview.personaName && interview.persona ? (
+                              <span style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 4,
+                                padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600,
+                                backgroundColor: { technical: '#EDE9FE', hr: '#CCFBF1', leadership: '#DBEAFE', sales: '#FFEDD5' }[interview.persona] ?? '#F1F5F9',
+                                color: { technical: '#6D28D9', hr: '#0F766E', leadership: '#1E3A5F', sales: '#C2410C' }[interview.persona] ?? '#64748B',
+                              }}>
+                                {interview.personaName}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground text-sm">—</span>
+                            )}
+                          </TableCell>
                           <TableCell className="text-muted-foreground whitespace-nowrap">
                             {interview.scheduledAt ? (
                               <span className="font-medium" style={{ color: "#6366F1" }}>

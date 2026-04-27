@@ -41,6 +41,8 @@ interface InterviewData {
   hasActiveSession?: boolean;
   minutesUntil?: number;
   message?: string;
+  persona?: string | null;
+  personaName?: string | null;
 }
 
 interface ConversationEntry {
@@ -54,13 +56,42 @@ interface ConversationApiResponse {
   topicArea: string;
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Persona Configs (client-side display only) ───────────────────────────────
 
-const GREETING =
-  "Hi there! I am AccionHire, your AI interviewer today. It is so lovely to meet you! " +
-  "This is a real conversation — no trick questions, just a genuine chat. " +
-  "Take a breath, be yourself, and let us have a wonderful conversation. " +
-  "To get us started — tell me about yourself and what has been the most exciting chapter of your career so far?";
+const CLIENT_PERSONAS = {
+  technical: {
+    name: 'Priya',
+    title: 'Senior Technical Interviewer',
+    avatarColor: '#6366F1',
+    avatarInitial: 'P',
+    greeting: 'Hi there! I am Priya, your interviewer today from AccionHire. It is wonderful to meet you! I want this to feel like a real technical conversation — so please be yourself. There are no trick questions here, just genuine curiosity about how you think and what you have built. To kick us off — tell me about yourself and what you are most proud of in your technical journey so far.',
+  },
+  hr: {
+    name: 'Meera',
+    title: 'People & Culture Specialist',
+    avatarColor: '#0D9488',
+    avatarInitial: 'M',
+    greeting: 'Hello! I am Meera from AccionHire, and I am so glad you could join us today. I want you to feel completely comfortable — this is just a friendly conversation to get to know you better as a person. No pressure at all. So let us start easy — tell me a little about yourself and what has brought you to this point in your career.',
+  },
+  leadership: {
+    name: 'Arjun',
+    title: 'Senior Leadership Assessor',
+    avatarColor: '#1E3A5F',
+    avatarInitial: 'A',
+    greeting: 'Good day! I am Arjun from AccionHire. I appreciate you making the time. I like to keep these conversations direct and substantive — I find that is most respectful of your time. I am looking forward to understanding your leadership philosophy and how you think about building and scaling teams. So tell me — what has been your most significant leadership achievement and what made it challenging?',
+  },
+  sales: {
+    name: 'Kavya',
+    title: 'Business Excellence Interviewer',
+    avatarColor: '#EA580C',
+    avatarInitial: 'K',
+    greeting: 'Hey! I am Kavya from AccionHire — great to connect! I love talking to sales and business folks because every conversation is different. I want to hear about your wins, your challenges, and how you think about building client relationships. So let us dive right in — tell me about your proudest business development moment and what drove that success.',
+  },
+} as const;
+
+type ClientPersonaKey = keyof typeof CLIENT_PERSONAS;
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const API_BASE = `${apiUrl}/api`;
 
@@ -130,7 +161,7 @@ export default function VoiceInterview() {
   const [cameraOff, setCameraOff] = useState(false);
   const [cameraWarnings, setCameraWarnings] = useState(0);
   const [cameraCountdown, setCameraCountdown] = useState(30);
-  const [cameraErrorType, setCameraErrorType] = useState<"denied" | "notfound" | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -320,39 +351,67 @@ export default function VoiceInterview() {
   }
 
   // ─── Camera ──────────────────────────────────────────────────────────────
-  async function startCamera(): Promise<boolean> {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: "user",
-          aspectRatio: { ideal: 16 / 9 },
-        },
-        audio: true,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        try {
-          await videoRef.current.play();
-        } catch {
-          // autoplay attr handles it
+  async function initCamera(retries = 3): Promise<boolean> {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+        }
+
+        if (attempt > 1) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: "user",
+            aspectRatio: { ideal: 16 / 9 },
+          },
+          audio: true,
+        });
+
+        streamRef.current = stream;
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play().catch(() => {});
+        }
+
+        setIsCameraReady(true);
+
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            console.log("Camera track ended unexpectedly");
+            setCameraError("Camera disconnected. Click Try Again to reconnect.");
+            clearInterval(faceDetectionRef.current!);
+            speak("I notice your camera has disconnected. Please reconnect your camera to continue.");
+          };
+        }
+
+        console.log(`Camera started on attempt ${attempt}`);
+        return true;
+      } catch (err: unknown) {
+        const domErr = err as { name?: string };
+        console.error(`Camera attempt ${attempt} failed:`, err);
+        setIsCameraReady(false);
+
+        if (attempt === retries) {
+          if (domErr?.name === "NotAllowedError") {
+            setCameraError("Camera permission denied. Please allow camera access and refresh.");
+          } else if (domErr?.name === "NotFoundError") {
+            setCameraError("No camera found. Please connect a camera.");
+          } else {
+            setCameraError("Camera unavailable. Please check your camera and try again.");
+          }
+          return false;
         }
       }
-      setIsCameraReady(true);
-      return true;
-    } catch (err) {
-      console.warn("Camera/mic access failed:", err);
-      setIsCameraReady(false);
-      const domErr = err as { name?: string };
-      if (domErr?.name === "NotAllowedError") {
-        setCameraErrorType("denied");
-      } else if (domErr?.name === "NotFoundError") {
-        setCameraErrorType("notfound");
-      }
-      return false;
     }
+    return false;
   }
 
   function stopCameraInternal() {
@@ -889,7 +948,7 @@ export default function VoiceInterview() {
     }
 
     setPhaseSync("camera-starting");
-    await startCamera();
+    await initCamera();
     startRecording();
     startElapsedTimer();
     startCameraMonitoring();
@@ -1034,7 +1093,7 @@ export default function VoiceInterview() {
   // ─── Handle "Allow & Start" button ───────────────────────────────────────
   async function handleRequestPermissions() {
     setPhaseSync("camera-starting");
-    await startCamera();
+    await initCamera();
     startRecording();
     startElapsedTimer();
     startCameraMonitoring();
@@ -1044,10 +1103,14 @@ export default function VoiceInterview() {
     startAutoSave(interviewIdRef.current);
 
     lastAnswerTimeRef.current = Date.now();
+    const pKey: ClientPersonaKey = (interviewRef.current?.persona && interviewRef.current.persona in CLIENT_PERSONAS)
+      ? (interviewRef.current.persona as ClientPersonaKey)
+      : 'technical';
+    const greeting = CLIENT_PERSONAS[pKey].greeting;
     setPhaseSync("greeting");
-    setAiMessage(GREETING);
-    addToConversation({ role: "ai", text: GREETING });
-    await speak(GREETING, 150);
+    setAiMessage(greeting);
+    addToConversation({ role: "ai", text: greeting });
+    await speak(greeting, 150);
 
     setPhaseSync("listening");
     startListening();
@@ -1203,6 +1266,11 @@ export default function VoiceInterview() {
   }
 
   // ─── Derived state ────────────────────────────────────────────────────────
+  const personaKey: ClientPersonaKey = (interview?.persona && interview.persona in CLIENT_PERSONAS)
+    ? (interview.persona as ClientPersonaKey)
+    : 'technical';
+  const currentPersona = CLIENT_PERSONAS[personaKey];
+
   const isInterviewActive = !["loading", "waiting", "permissions", "camera-starting", "submitting", "complete", "rejected", "error"].includes(phase);
   const isAISpeaking = phase === "greeting" || phase === "speaking";
   const answersCount = conversationHistory.filter((m) => m.role === "candidate").length;
@@ -1219,29 +1287,30 @@ export default function VoiceInterview() {
         autoPlay
         muted
         playsInline
-        className={`absolute inset-0 transition-opacity duration-500 ${
-          isInterviewActive && isCameraReady ? "opacity-100" : "opacity-0"
-        }`}
+        className="absolute inset-0"
         style={{
           width: "100%",
           height: "100%",
           objectFit: "contain",
           transform: "scaleX(-1)",
           backgroundColor: "#000",
+          display: "block",
         }}
       />
 
-      {/* Camera unavailable placeholder */}
-      {isInterviewActive && !isCameraReady && (
-        <div className="absolute inset-0 bg-gray-950 flex items-center justify-center">
-          <div className="text-center">
-            <div className="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-3">
-              <svg className="w-10 h-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.069A1 1 0 0121 8.882v6.236a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
-              </svg>
-            </div>
-            <p className="text-gray-500 text-sm">Camera unavailable</p>
-          </div>
+      {/* Starting camera placeholder */}
+      {isInterviewActive && !isCameraReady && !cameraError && (
+        <div style={{
+          position: "absolute",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          textAlign: "center",
+        }}>
+          <div style={{ fontSize: 48, opacity: 0.3 }}>📷</div>
+          <p style={{ color: "#64748B", fontSize: 14, marginTop: 8 }}>
+            Starting camera...
+          </p>
         </div>
       )}
 
@@ -1359,44 +1428,59 @@ export default function VoiceInterview() {
         </div>
       )}
 
-      {/* ════════════════ CAMERA PERMISSION ERROR (EDGE 2) ════════════════ */}
-      {cameraErrorType === "denied" && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-950 p-6">
-          <div className="max-w-sm w-full text-center bg-gray-900 rounded-2xl p-8 border border-red-700/40">
-            <div className="text-5xl mb-4">🎥</div>
-            <h2 className="text-xl font-bold text-white mb-3">Camera Access Denied</h2>
-            <p className="text-gray-400 text-sm mb-5">To enable camera access:</p>
-            <ol className="text-left text-gray-300 text-sm space-y-2 mb-6">
-              <li className="flex gap-2"><span className="text-indigo-400 font-bold">1.</span> Click the camera icon <strong>🎥</strong> in your browser address bar</li>
-              <li className="flex gap-2"><span className="text-indigo-400 font-bold">2.</span> Select <strong className="text-white">Allow</strong> for camera and microphone</li>
-              <li className="flex gap-2"><span className="text-indigo-400 font-bold">3.</span> Refresh this page and try again</li>
-            </ol>
-            <button
-              onClick={() => { setCameraErrorType(null); window.location.reload(); }}
-              className="w-full py-3 rounded-xl text-white font-semibold text-sm"
-              style={{ backgroundColor: "#6366F1" }}
-            >
-              Refresh &amp; Try Again
-            </button>
-          </div>
-        </div>
-      )}
-      {cameraErrorType === "notfound" && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-950 p-6">
-          <div className="max-w-sm w-full text-center bg-gray-900 rounded-2xl p-8 border border-orange-700/40">
-            <div className="text-5xl mb-4">🔌</div>
-            <h2 className="text-xl font-bold text-white mb-3">No Camera Found</h2>
-            <p className="text-gray-400 text-sm leading-relaxed mb-6">
-              No camera or microphone was detected. Please connect a camera and microphone, then refresh this page.
-            </p>
-            <button
-              onClick={() => { setCameraErrorType(null); window.location.reload(); }}
-              className="w-full py-3 rounded-xl text-white font-semibold text-sm"
-              style={{ backgroundColor: "#6366F1" }}
-            >
-              Refresh &amp; Try Again
-            </button>
-          </div>
+      {/* ════════════════ CAMERA ERROR OVERLAY ════════════════ */}
+      {cameraError && !["complete", "rejected", "submitting"].includes(phase) && (
+        <div style={{
+          position: "absolute",
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: "#0F172A",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 16,
+          zIndex: 20,
+        }}>
+          <div style={{ fontSize: 48 }}>📷</div>
+          <h3 style={{ color: "white", fontSize: 18, fontWeight: 700 }}>
+            Camera Unavailable
+          </h3>
+          <p style={{ color: "#94A3B8", textAlign: "center", maxWidth: 320, fontSize: 14 }}>
+            {cameraError}
+          </p>
+          <button
+            onClick={async () => {
+              setCameraError(null);
+              const ok = await initCamera();
+              if (!ok) setCameraError("Still unable to access camera. Please refresh the page.");
+            }}
+            style={{
+              background: "#6366F1",
+              border: "none",
+              borderRadius: 8,
+              padding: "12px 24px",
+              color: "white",
+              fontWeight: 700,
+              cursor: "pointer",
+              fontSize: 14,
+            }}
+          >
+            🔄 Try Again
+          </button>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              background: "transparent",
+              border: "1px solid #334155",
+              borderRadius: 8,
+              padding: "10px 24px",
+              color: "#64748B",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            Refresh Page
+          </button>
         </div>
       )}
 
@@ -1591,7 +1675,7 @@ export default function VoiceInterview() {
             </div>
           </div>
 
-          {/* AccionHire avatar */}
+          {/* Persona avatar */}
           <div
             className="absolute z-10"
             style={{
@@ -1606,20 +1690,19 @@ export default function VoiceInterview() {
               border: "1px solid #334155",
             }}
           >
-            <div style={{ width: 44, height: 44, borderRadius: "50%", backgroundColor: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 700, color: "white", flexShrink: 0, position: "relative" }}>
-              A
+            <div style={{ width: 44, height: 44, borderRadius: "50%", backgroundColor: currentPersona.avatarColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 700, color: "white", flexShrink: 0, position: "relative" }}>
+              {currentPersona.avatarInitial}
               <div style={{ position: "absolute", bottom: 2, right: 2, width: 10, height: 10, backgroundColor: "#10B981", borderRadius: "50%", border: "2px solid #1E293B" }} />
             </div>
             <div>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>
-                <span style={{ color: "#CE3D3A" }}>Accion</span><span style={{ color: "#555555" }}>Hire</span>
-              </div>
-              <div style={{ color: isAISpeaking ? "#6366F1" : "#94A3B8", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+              <div style={{ color: "white", fontWeight: 700, fontSize: 14 }}>{currentPersona.name}</div>
+              <div style={{ color: "#64748B", fontSize: 11 }}>{currentPersona.title}</div>
+              <div style={{ color: isAISpeaking ? currentPersona.avatarColor : "#94A3B8", fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
                 {isAISpeaking ? (
                   <>
                     <span style={{ display: "flex", gap: 2, alignItems: "center" }}>
                       {[1, 2, 3, 4].map((i) => (
-                        <div key={i} style={{ width: 3, backgroundColor: "#6366F1", borderRadius: 2, height: i % 2 === 0 ? 12 : 8 }} />
+                        <div key={i} style={{ width: 3, backgroundColor: currentPersona.avatarColor, borderRadius: 2, height: i % 2 === 0 ? 12 : 8 }} />
                       ))}
                     </span>
                     Speaking...
@@ -1648,8 +1731,8 @@ export default function VoiceInterview() {
                 <div className="bg-blue-950/60 rounded-xl px-4 py-3 border border-blue-700/30">
                   <div className="flex items-center gap-2 mb-1.5">
                     <SpeakingBars color="bg-blue-400" />
-                    <span className="text-xs font-semibold">
-                      <span style={{ color: "#CE3D3A" }}>Accion</span><span style={{ color: "#555555" }}>Hire</span>
+                    <span className="text-xs font-semibold" style={{ color: currentPersona.avatarColor }}>
+                      {currentPersona.name}
                     </span>
                   </div>
                   <p className="text-white text-sm leading-relaxed line-clamp-3">{aiMessage}</p>
@@ -1700,7 +1783,7 @@ export default function VoiceInterview() {
 
               {/* Speaking hint */}
               {(phase === "greeting" || phase === "speaking") && (
-                <p className="text-center text-gray-600 text-xs pb-1">AccionHire is speaking — please listen</p>
+                <p className="text-center text-gray-600 text-xs pb-1">{currentPersona.name} is speaking — please listen</p>
               )}
 
               {/* Answer counter */}
