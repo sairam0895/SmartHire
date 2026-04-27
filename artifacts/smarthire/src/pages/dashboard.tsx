@@ -54,6 +54,7 @@ import { AppLayout } from "@/components/layout";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 
 const PAGE_SIZE = 10;
 
@@ -312,20 +313,54 @@ export default function Dashboard() {
 
   const handleCancel = async () => {
     if (!cancelTarget) return;
-    setIsCancelling(true);
-    try {
-      const res = await apiFetch(`/api/interviews/${cancelTarget.id}/cancel`, {
-        method: "PATCH",
-      });
-      if (!res.ok) throw new Error("Failed to cancel");
-      await queryClient.invalidateQueries({ queryKey: interviewsKey });
-      toast({ title: "Interview cancelled", description: "The interview has been cancelled." });
-      setCancelTarget(null);
-    } catch {
-      toast({ variant: "destructive", title: "Failed to cancel interview" });
-    } finally {
-      setIsCancelling(false);
-    }
+    const targetId = cancelTarget.id;
+    setCancelTarget(null);
+    setIsCancelling(false);
+
+    // Optimistic update
+    queryClient.setQueryData<Interview[]>(interviewsKey, (old) =>
+      old ? old.map((i) => i.id === targetId ? { ...i, status: "cancelled" } : i) : old
+    );
+
+    let undone = false;
+    const undoTimeout = setTimeout(async () => {
+      if (undone) return;
+      try {
+        const res = await apiFetch(`/api/interviews/${targetId}/cancel`, { method: "PATCH" });
+        if (!res.ok) throw new Error("Failed to cancel");
+        await queryClient.invalidateQueries({ queryKey: interviewsKey });
+      } catch {
+        queryClient.invalidateQueries({ queryKey: interviewsKey });
+        toast({ variant: "destructive", title: "Failed to cancel interview" });
+      }
+    }, 5000);
+
+    toast({
+      title: "Interview cancelled",
+      description: "Click Undo to restore it.",
+      action: (
+        <ToastAction
+          altText="Undo cancel"
+          onClick={async () => {
+            undone = true;
+            clearTimeout(undoTimeout);
+            queryClient.setQueryData<Interview[]>(interviewsKey, (old) =>
+              old ? old.map((i) => i.id === targetId ? { ...i, status: "pending" } : i) : old
+            );
+            try {
+              await apiFetch(`/api/interviews/${targetId}/restore`, { method: "PATCH" });
+              await queryClient.invalidateQueries({ queryKey: interviewsKey });
+              toast({ title: "Cancel undone", description: "The interview has been restored." });
+            } catch {
+              toast({ variant: "destructive", title: "Failed to restore interview" });
+              queryClient.invalidateQueries({ queryKey: interviewsKey });
+            }
+          }}
+        >
+          Undo
+        </ToastAction>
+      ),
+    });
   };
 
   const getPageNumbers = () => {

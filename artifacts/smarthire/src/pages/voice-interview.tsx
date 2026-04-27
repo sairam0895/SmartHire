@@ -108,6 +108,11 @@ export default function VoiceInterview() {
   const urlToken = params.token ?? null;
   const urlId = params.id ? Number(params.id) : null;
 
+  // ── Browser / device detection (EDGE 1) ──────────────────────────────────
+  const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
+  const isMobile = /Android|iPhone|iPad/.test(navigator.userAgent);
+  const [browserWarningDismissed, setBrowserWarningDismissed] = useState(false);
+
   // ── State ─────────────────────────────────────────────────────────────────
   const [hasConsented, setHasConsented] = useState(false);
   const [phase, setPhase] = useState<Phase>("loading");
@@ -125,6 +130,7 @@ export default function VoiceInterview() {
   const [cameraOff, setCameraOff] = useState(false);
   const [cameraWarnings, setCameraWarnings] = useState(0);
   const [cameraCountdown, setCameraCountdown] = useState(30);
+  const [cameraErrorType, setCameraErrorType] = useState<"denied" | "notfound" | null>(null);
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -164,6 +170,8 @@ export default function VoiceInterview() {
   const multiplePersonIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const gazeConsecutiveRef = useRef(0);
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastAnswerTimeRef = useRef<number>(Date.now());
+  const silenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // RAG — resume upload
   const [resumeUploaded, setResumeUploaded] = useState(false);
@@ -304,6 +312,7 @@ export default function VoiceInterview() {
     if (gazeIntervalRef.current) clearInterval(gazeIntervalRef.current);
     if (multiplePersonIntervalRef.current) clearInterval(multiplePersonIntervalRef.current);
     if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
+    if (silenceIntervalRef.current) clearInterval(silenceIntervalRef.current);
     stopAudioRecorderInternal();
     stopCameraInternal();
     window.speechSynthesis.cancel();
@@ -335,6 +344,12 @@ export default function VoiceInterview() {
     } catch (err) {
       console.warn("Camera/mic access failed:", err);
       setIsCameraReady(false);
+      const domErr = err as { name?: string };
+      if (domErr?.name === "NotAllowedError") {
+        setCameraErrorType("denied");
+      } else if (domErr?.name === "NotFoundError") {
+        setCameraErrorType("notfound");
+      }
       return false;
     }
   }
@@ -396,6 +411,55 @@ export default function VoiceInterview() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ─── Silence detection (EDGE 3) ──────────────────────────────────────────
+  useEffect(() => {
+    const activePhases: Phase[] = ["greeting", "listening", "thinking", "speaking"];
+    if (!activePhases.includes(phase as Phase)) return;
+
+    if (silenceIntervalRef.current) clearInterval(silenceIntervalRef.current);
+
+    silenceIntervalRef.current = setInterval(() => {
+      const currentPhase = phaseRef.current;
+      if (!activePhases.includes(currentPhase as Phase)) return;
+      if (currentPhase === "speaking" || currentPhase === "greeting") return;
+
+      const silentFor = Date.now() - lastAnswerTimeRef.current;
+
+      if (silentFor > 300000) {
+        clearInterval(silenceIntervalRef.current!);
+        speak("It seems you may have stepped away. I will save your progress. You can rejoin using the same link.").then(() => {
+          setPhaseSync("complete");
+        });
+        return;
+      }
+
+      if (silentFor > 120000) {
+        lastAnswerTimeRef.current = Date.now();
+        speak("Are you still there? Take your time — just let me know when you are ready to continue.");
+      }
+    }, 30000);
+
+    return () => {
+      if (silenceIntervalRef.current) clearInterval(silenceIntervalRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  // ─── Beforeunload warning during active interview (EDGE 5) ───────────────
+  useEffect(() => {
+    const activePhases: Phase[] = ["greeting", "listening", "thinking", "speaking"];
+    if (!activePhases.includes(phase as Phase)) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "Your interview is in progress. Are you sure you want to leave? Your progress is saved.";
+      return e.returnValue;
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [phase]);
 
   function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
     if (voices.length === 0) return null;
@@ -941,6 +1005,7 @@ export default function VoiceInterview() {
     startMultiplePersonDetection();
     startAutoSave(interviewIdRef.current);
 
+    lastAnswerTimeRef.current = Date.now();
     setPhaseSync("greeting");
     setAiMessage(GREETING);
     addToConversation({ role: "ai", text: GREETING });
@@ -957,6 +1022,7 @@ export default function VoiceInterview() {
 
     const transcript = await stopAndTranscribe();
 
+    lastAnswerTimeRef.current = Date.now();
     if (!transcript || transcript.trim().length < 3) {
       setLiveTranscript("Nothing captured — please try again");
       setTimeout(() => {
@@ -1038,6 +1104,7 @@ export default function VoiceInterview() {
     if (multiplePersonIntervalRef.current) clearInterval(multiplePersonIntervalRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
+    if (silenceIntervalRef.current) clearInterval(silenceIntervalRef.current);
     setFaceWarning(false);
     setCameraOff(false);
     noFaceCountRef.current = 0;
@@ -1203,6 +1270,95 @@ export default function VoiceInterview() {
           >
             My Face is Visible — Continue
           </button>
+        </div>
+      )}
+
+      {/* ════════════════ BROWSER — MOBILE WARNING (EDGE 1) ════════════════ */}
+      {isMobile && !browserWarningDismissed && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center bg-gray-900 rounded-2xl p-8 border border-yellow-700/40">
+            <div className="text-5xl mb-4">📱</div>
+            <h2 className="text-xl font-bold text-white mb-3">Desktop Recommended</h2>
+            <p className="text-gray-400 text-sm leading-relaxed mb-6">
+              For the best interview experience please use <strong className="text-white">Google Chrome on a desktop or laptop computer</strong>.
+            </p>
+            <button
+              onClick={() => setBrowserWarningDismissed(true)}
+              className="w-full py-3 rounded-xl border border-gray-600 text-gray-300 text-sm font-medium hover:bg-gray-800 transition-colors"
+            >
+              I understand, continue anyway
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ BROWSER — NON-CHROME WARNING (EDGE 1) ════════════════ */}
+      {!isMobile && !isChrome && !browserWarningDismissed && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center bg-gray-900 rounded-2xl p-8 border border-yellow-700/40">
+            <div className="text-5xl mb-4">⚠️</div>
+            <h2 className="text-xl font-bold text-white mb-3">Chrome Recommended</h2>
+            <p className="text-gray-400 text-sm leading-relaxed mb-6">
+              AccionHire works best on <strong className="text-white">Google Chrome</strong>. Some features (audio recording, speech synthesis) may not work on other browsers.
+            </p>
+            <div className="flex gap-3">
+              <a
+                href="googlechrome://navigate?url=window.location.href"
+                onClick={(e) => { e.preventDefault(); window.open(`https://www.google.com/chrome/`, "_blank"); }}
+                className="flex-1 py-3 rounded-xl text-white text-sm font-semibold text-center"
+                style={{ backgroundColor: "#6366F1" }}
+              >
+                Open in Chrome
+              </a>
+              <button
+                onClick={() => setBrowserWarningDismissed(true)}
+                className="flex-1 py-3 rounded-xl border border-gray-600 text-gray-400 text-sm font-medium hover:bg-gray-800 transition-colors"
+              >
+                Continue anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ CAMERA PERMISSION ERROR (EDGE 2) ════════════════ */}
+      {cameraErrorType === "denied" && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center bg-gray-900 rounded-2xl p-8 border border-red-700/40">
+            <div className="text-5xl mb-4">🎥</div>
+            <h2 className="text-xl font-bold text-white mb-3">Camera Access Denied</h2>
+            <p className="text-gray-400 text-sm mb-5">To enable camera access:</p>
+            <ol className="text-left text-gray-300 text-sm space-y-2 mb-6">
+              <li className="flex gap-2"><span className="text-indigo-400 font-bold">1.</span> Click the camera icon <strong>🎥</strong> in your browser address bar</li>
+              <li className="flex gap-2"><span className="text-indigo-400 font-bold">2.</span> Select <strong className="text-white">Allow</strong> for camera and microphone</li>
+              <li className="flex gap-2"><span className="text-indigo-400 font-bold">3.</span> Refresh this page and try again</li>
+            </ol>
+            <button
+              onClick={() => { setCameraErrorType(null); window.location.reload(); }}
+              className="w-full py-3 rounded-xl text-white font-semibold text-sm"
+              style={{ backgroundColor: "#6366F1" }}
+            >
+              Refresh &amp; Try Again
+            </button>
+          </div>
+        </div>
+      )}
+      {cameraErrorType === "notfound" && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-950 p-6">
+          <div className="max-w-sm w-full text-center bg-gray-900 rounded-2xl p-8 border border-orange-700/40">
+            <div className="text-5xl mb-4">🔌</div>
+            <h2 className="text-xl font-bold text-white mb-3">No Camera Found</h2>
+            <p className="text-gray-400 text-sm leading-relaxed mb-6">
+              No camera or microphone was detected. Please connect a camera and microphone, then refresh this page.
+            </p>
+            <button
+              onClick={() => { setCameraErrorType(null); window.location.reload(); }}
+              className="w-full py-3 rounded-xl text-white font-semibold text-sm"
+              style={{ backgroundColor: "#6366F1" }}
+            >
+              Refresh &amp; Try Again
+            </button>
+          </div>
         </div>
       )}
 

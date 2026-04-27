@@ -365,6 +365,16 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
 
   const { answers, conversationHistory: rawHistory, rejectedReason, faceViolations, proctoring } = bodyParsed.data;
 
+  // EDGE 9 — Empty interview protection
+  const validAnswers = answers.filter((a) => a.answerText && a.answerText.trim().length > 10);
+  if (!rejectedReason && validAnswers.length === 0) {
+    await db.update(interviewsTable)
+      .set({ status: "completed", verdict: "Incomplete — No answers recorded", overallScore: 0, completedAt: new Date() })
+      .where(eq(interviewsTable.id, params.data.id));
+    res.json({ success: true, incomplete: true });
+    return;
+  }
+
   // Handle camera rejection fast path
   if (rejectedReason) {
     await db
@@ -429,23 +439,37 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
 
   const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
 
-  let evaluation: Awaited<ReturnType<typeof evaluateInterview>>;
-  try {
-    evaluation = await evaluateInterview({
-      jobTitle: interview.jobTitle,
-      jobDescription: interview.jobDescription,
-      conversationHistory,
-      durationMinutes,
-      jdAnalysis: interview.jdAnalysis,
-      gapAnalysis: interview.gapAnalysis,
-    });
-  } catch (err) {
-    req.log.error({ err }, "Failed to evaluate interview");
-    await db
-      .update(interviewsTable)
-      .set({ status: "pending" })
+  // EDGE 4 — Evaluation with retry (3 attempts, 2s apart)
+  let evaluation: Awaited<ReturnType<typeof evaluateInterview>> | null = null;
+  let attempts = 0;
+  while (!evaluation && attempts < 3) {
+    try {
+      const result = await evaluateInterview({
+        jobTitle: interview.jobTitle,
+        jobDescription: interview.jobDescription,
+        conversationHistory,
+        durationMinutes,
+        jdAnalysis: interview.jdAnalysis,
+        gapAnalysis: interview.gapAnalysis,
+      });
+      if (result.overallScore && result.overallScore >= 1 && result.overallScore <= 10) {
+        evaluation = result;
+      } else {
+        attempts++;
+        if (attempts < 3) await new Promise((r) => setTimeout(r, 2000));
+      }
+    } catch (err) {
+      req.log.error({ err }, `Evaluation attempt ${attempts + 1} failed`);
+      attempts++;
+      if (attempts < 3) await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+
+  if (!evaluation) {
+    await db.update(interviewsTable)
+      .set({ status: "completed", verdict: "Evaluation Failed — Manual Review Required", overallScore: 0, completedAt: new Date() })
       .where(eq(interviewsTable.id, params.data.id));
-    res.status(500).json({ error: "AI evaluation failed. Please try again." });
+    res.json({ success: true, warning: "Evaluation failed — manual review needed" });
     return;
   }
 
@@ -608,6 +632,40 @@ router.patch("/interviews/:id/cancel", requireAuth, async (req, res): Promise<vo
   const [updated] = await db
     .update(interviewsTable)
     .set({ status: "cancelled" })
+    .where(eq(interviewsTable.id, id))
+    .returning();
+
+  res.json({
+    ...updated,
+    createdAt: updated!.createdAt.toISOString(),
+    completedAt: updated!.completedAt ? updated!.completedAt.toISOString() : null,
+    scheduledAt: updated!.scheduledAt ? updated!.scheduledAt.toISOString() : null,
+  });
+});
+
+// ─── Restore cancelled interview (undo cancel) ───────────────────────────────
+
+router.patch("/interviews/:id/restore", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(String(req.params.id ?? ""), 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid interview id" });
+    return;
+  }
+
+  const [interview] = await db.select().from(interviewsTable).where(eq(interviewsTable.id, id));
+  if (!interview) {
+    res.status(404).json({ error: "Interview not found" });
+    return;
+  }
+
+  if (interview.status !== "cancelled") {
+    res.status(400).json({ error: "Interview is not cancelled" });
+    return;
+  }
+
+  const [updated] = await db
+    .update(interviewsTable)
+    .set({ status: interview.scheduledAt ? "pending" : "pending" })
     .where(eq(interviewsTable.id, id))
     .returning();
 

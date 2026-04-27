@@ -35,7 +35,7 @@ const formSchema = z.object({
   candidateName: z.string().min(2, "Candidate name is required"),
   candidateEmail: z.string().email("Invalid email address"),
   jobTitle: z.string().min(2, "Job title is required"),
-  jobDescription: z.string().min(20, "Job description needs to be more detailed (min 20 chars)"),
+  jobDescription: z.string().min(50, "Please provide a more detailed job description (minimum 50 characters). This helps AccionHire ask relevant questions."),
   interviewDate: z.string().optional(),
   interviewTime: z.string().optional(),
   durationMinutes: z.number().int().optional(),
