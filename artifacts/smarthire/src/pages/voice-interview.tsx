@@ -172,6 +172,7 @@ export default function VoiceInterview() {
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastAnswerTimeRef = useRef<number>(Date.now());
   const silenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isSpeakingRef = useRef(false);
 
   // RAG — resume upload
   const [resumeUploaded, setResumeUploaded] = useState(false);
@@ -478,10 +479,8 @@ export default function VoiceInterview() {
     return new Promise<void>((resolve) => {
       window.speechSynthesis.cancel();
 
-      // Pause microphone capture while AI speaks — prevents TTS bleed into candidate recording
-      if (audioRecorderRef.current && audioRecorderRef.current.state === "recording") {
-        try { audioRecorderRef.current.pause(); } catch { /* ignore */ }
-      }
+      // Flag: ignore mic chunks while AI is speaking
+      isSpeakingRef.current = true;
 
       const doSpeak = () => {
         const utterance = new SpeechSynthesisUtterance(text);
@@ -501,11 +500,11 @@ export default function VoiceInterview() {
 
         const onFinish = () => {
           clearInterval(resumeTimer);
-          // Resume microphone after AI finishes speaking
-          if (audioRecorderRef.current && audioRecorderRef.current.state === "paused") {
-            try { audioRecorderRef.current.resume(); } catch { /* ignore */ }
-          }
-          resolve();
+          // Small delay to let the audio buffer clear before collecting mic input
+          setTimeout(() => {
+            isSpeakingRef.current = false;
+            resolve();
+          }, 500);
         };
 
         utterance.onend = onFinish;
@@ -544,9 +543,15 @@ export default function VoiceInterview() {
 
   function startListening() {
     if (!streamRef.current) return;
-    // Don't start capturing while AI is speaking — candidate isn't answering yet
+    // Don't start capturing while AI is speaking
     const p = phaseRef.current;
     if (p === "speaking" || p === "greeting" || p === "thinking") return;
+
+    // Stop any existing recorder before creating a fresh one
+    if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
+      try { audioRecorderRef.current.stop(); } catch { /* ignore */ }
+    }
+
     audioChunksRef.current = [];
     isRecordingRef.current = true;
     setLiveTranscript("");
@@ -558,10 +563,13 @@ export default function VoiceInterview() {
 
     const recorder = new MediaRecorder(audioStream, { mimeType });
     recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      // Only collect chunks when AI is NOT speaking
+      if (e.data.size > 0 && !isSpeakingRef.current) {
+        audioChunksRef.current.push(e.data);
+      }
     };
     audioRecorderRef.current = recorder;
-    recorder.start(1000);
+    recorder.start(500);
   }
 
   async function stopAndTranscribe(): Promise<string> {
@@ -573,9 +581,25 @@ export default function VoiceInterview() {
     return new Promise((resolve) => {
       audioRecorderRef.current!.onstop = async () => {
         try {
+          // Empty chunks = AI was speaking the entire time, nothing to transcribe
+          if (audioChunksRef.current.length === 0) {
+            setLiveTranscript("Nothing captured — please try again");
+            setTimeout(() => {
+              setLiveTranscript("");
+              startListening();
+            }, 1000);
+            resolve("");
+            return;
+          }
+
           const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-          if (blob.size < 1000) {
-            setLiveTranscript("");
+
+          if (blob.size < 500) {
+            setLiveTranscript("Nothing captured — please try again");
+            setTimeout(() => {
+              setLiveTranscript("");
+              startListening();
+            }, 1000);
             resolve("");
             return;
           }
