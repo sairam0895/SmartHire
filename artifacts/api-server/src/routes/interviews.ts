@@ -967,10 +967,8 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
       });
     }
 
-    // If AI-generated or scripted, pass hint into result
-    if ((qualityResult?.aiGenerated || qualityResult?.scripted) && !result.isComplete) {
-      result.nextQuestion = `AUTHENTICITY FLAG noted internally. ${result.nextQuestion}`;
-    }
+    // If AI-generated or scripted, note it internally — do NOT expose to candidate
+    // The monitoring data is logged server-side only; question is left as-is
 
     // Coaching check every 3 answers
     if (answerCount > 0 && answerCount % 3 === 0) {
@@ -997,6 +995,14 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
         .where(eq(interviewsTable.id, interviewId))
         .catch(console.error);
     }
+
+    // Strip any internal monitoring language that may have leaked into the question
+    result.nextQuestion = result.nextQuestion
+      .replace(/AUTHENTICITY FLAG[^.]*\./gi, "")
+      .replace(/noted internally\.?/gi, "")
+      .replace(/PROBE NEEDED:?/gi, "")
+      .replace(/\[Internal[^\]]*\]/gi, "")
+      .trim();
 
     res.json(result);
   } catch (err) {

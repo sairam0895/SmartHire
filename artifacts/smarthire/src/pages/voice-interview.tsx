@@ -478,6 +478,11 @@ export default function VoiceInterview() {
     return new Promise<void>((resolve) => {
       window.speechSynthesis.cancel();
 
+      // Pause microphone capture while AI speaks — prevents TTS bleed into candidate recording
+      if (audioRecorderRef.current && audioRecorderRef.current.state === "recording") {
+        try { audioRecorderRef.current.pause(); } catch { /* ignore */ }
+      }
+
       const doSpeak = () => {
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = "en-IN";
@@ -494,8 +499,17 @@ export default function VoiceInterview() {
           if (window.speechSynthesis.paused) window.speechSynthesis.resume();
         }, 200);
 
-        utterance.onend = () => { clearInterval(resumeTimer); resolve(); };
-        utterance.onerror = () => { clearInterval(resumeTimer); resolve(); };
+        const onFinish = () => {
+          clearInterval(resumeTimer);
+          // Resume microphone after AI finishes speaking
+          if (audioRecorderRef.current && audioRecorderRef.current.state === "paused") {
+            try { audioRecorderRef.current.resume(); } catch { /* ignore */ }
+          }
+          resolve();
+        };
+
+        utterance.onend = onFinish;
+        utterance.onerror = onFinish;
 
         window.speechSynthesis.speak(utterance);
       };
@@ -530,6 +544,9 @@ export default function VoiceInterview() {
 
   function startListening() {
     if (!streamRef.current) return;
+    // Don't start capturing while AI is speaking — candidate isn't answering yet
+    const p = phaseRef.current;
+    if (p === "speaking" || p === "greeting" || p === "thinking") return;
     audioChunksRef.current = [];
     isRecordingRef.current = true;
     setLiveTranscript("");
@@ -744,10 +761,7 @@ export default function VoiceInterview() {
             return;
           }
 
-          const msg = new SpeechSynthesisUtterance(
-            `I notice your face is not clearly visible. Please ensure your face is on camera. This is warning ${faceViolationsRef.current} of 3.`
-          );
-          window.speechSynthesis.speak(msg);
+          speak(`I notice your face is not clearly visible. Please ensure your face is on camera. This is warning ${faceViolationsRef.current} of 3.`);
         }
       } else {
         noFaceCountRef.current = 0;

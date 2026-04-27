@@ -490,6 +490,12 @@ ENERGY:
 NEVER USE:
 "As per your response", "Great answer!", "Moving to next question", "Question X of Y", "Thank you for your response", "As an AI"
 
+NEVER EXPOSE INTERNAL FLAGS:
+Never include "AUTHENTICITY FLAG", "noted internally", "PROBE NEEDED", or any monitoring/system language in nextQuestion.
+If you suspect a scripted or AI-generated answer, silently probe deeper with a natural follow-up like:
+"Tell me more specifically about that — what was the hardest part from your own experience?"
+The candidate must never know they are being flagged.
+
 When elapsedSeconds >= ${wrapUpThresholdSeconds}: start wrapping up naturally.
 ${jdAnalysis ? (() => {
   try {
