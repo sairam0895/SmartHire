@@ -14,6 +14,9 @@ import { requireAuth } from "../middlewares/requireAuth";
 import { z } from "zod";
 import multer from "multer";
 import { randomUUID } from "crypto";
+import { ElevenLabsClient } from "elevenlabs";
+
+const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
 const router: IRouter = Router();
 
@@ -1147,5 +1150,44 @@ router.post(
     }
   }
 );
+
+// ─── TTS ─────────────────────────────────────────────────────────────────────
+
+router.post("/tts", async (req, res): Promise<void> => {
+  const { text, voiceId } = req.body as { text?: string; voiceId?: string };
+
+  if (!text || text.trim().length === 0) {
+    res.status(400).json({ error: "No text provided" });
+    return;
+  }
+
+  const truncated = text.substring(0, 1000);
+
+  try {
+    const audio = await elevenlabs.generate({
+      voice: voiceId || process.env.ELEVENLABS_VOICE_ID || "MwUMLXurEzSN7bIfIdXF",
+      text: truncated,
+      model_id: "eleven_turbo_v2_5",
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.75,
+        style: 0.3,
+        use_speaker_boost: true,
+      },
+    });
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "no-cache");
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of audio) {
+      chunks.push(Buffer.from(chunk));
+    }
+    res.send(Buffer.concat(chunks));
+  } catch (err) {
+    console.error("[tts]", err);
+    res.status(500).json({ error: "TTS failed" });
+  }
+});
 
 export default router;

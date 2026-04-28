@@ -26,6 +26,7 @@
     "dotenv": "^17.4.1",
     "drizzle-orm": "catalog:",
     "drizzle-zod": "^0.8.3",
+    "elevenlabs": "^1.59.0",
     "express": "^5",
     "express-rate-limit": "^8.4.1",
     "jsonwebtoken": "^9.0.3",
