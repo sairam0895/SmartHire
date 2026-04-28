@@ -972,10 +972,8 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
 
   const { interviewId, jobTitle, jobDescription, conversationHistory, elapsedSeconds, durationMinutes } = parsed.data;
 
-  console.log(`[conversation] Received: ${conversationHistory.length} messages, elapsed: ${elapsedSeconds}s`);
-  if (conversationHistory.length > 0) {
-    console.log('[conversation] Last message:', JSON.stringify(conversationHistory[conversationHistory.length - 1]));
-  }
+  console.log('[interview-conversation] history from frontend:', conversationHistory.length, 'messages');
+  console.log('[interview-conversation] last AI message:', conversationHistory.filter(m => m.role === 'ai').slice(-1)[0]?.text?.substring(0, 50));
 
   let jdAnalysis: string | null = null;
   let gapAnalysis: string | null = null;
@@ -993,6 +991,8 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
       ? (rawPersona as keyof typeof PERSONAS)
       : 'technical';
     personaConfig = PERSONAS[personaKey];
+
+    console.log('[interview-conversation] jdAnalysis:', !!jdAnalysis);
 
     // Set interviewStartedAt on first conversation exchange
     if (!interviewStartedAt && conversationHistory.length <= 2) {
@@ -1080,13 +1080,10 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
 
     // Fix 1B: if question is too similar to ANY prior AI message, retry once with a stronger directive
     if (!result.isComplete) {
+      console.log('[interview-conversation] next question:', result.nextQuestion.substring(0, 100));
       const allAIMessages = conversationHistory
         .filter(m => m.role === "ai")
         .map(m => m.text.toLowerCase());
-      console.log('=== CONVERSATION DEBUG ===');
-      console.log('History received:', conversationHistory?.length, 'messages');
-      console.log('Last 3 messages:', JSON.stringify(conversationHistory?.slice(-3), null, 2));
-      console.log('Next question generated:', result.nextQuestion.substring(0, 100));
       const isTooSimilar = allAIMessages.some(prev => {
         const words = result.nextQuestion.toLowerCase().split(" ");
         const commonWords = words.filter(w => w.length > 4 && prev.includes(w));
