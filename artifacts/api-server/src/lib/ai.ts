@@ -588,6 +588,8 @@ Questions asked so far: ${candidateTurns} of ${maxQuestions}. ${
         { role: "user", content: userPrompt },
       ];
 
+  console.log(`[ai] Sending ${llmMessages.length} messages to LLM (${conversationHistory.length} history turns)`);
+
   try {
     const response = await openai.chat.completions.create({
       model: "llama-3.3-70b-versatile",
@@ -601,7 +603,39 @@ Questions asked so far: ${candidateTurns} of ${maxQuestions}. ${
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No JSON found in response");
 
-    return JSON.parse(jsonMatch[0]) as ConversationResult;
+    let result = JSON.parse(jsonMatch[0]) as ConversationResult;
+
+    // In-function dedup: if question is too similar to any prior AI message, retry at higher temperature
+    if (!isTestMode && !result.isComplete && conversationHistory.length > 0) {
+      const previousAI = conversationHistory
+        .filter(m => m.role === "ai")
+        .map(m => m.text.toLowerCase());
+      const questionWords = result.nextQuestion.toLowerCase().split(" ").filter(w => w.length > 4);
+      const isSimilar = previousAI.some(prev => questionWords.filter(w => prev.includes(w)).length > 4);
+      if (isSimilar) {
+        console.warn(`[ai] Duplicate detected — retrying at temperature 0.9`);
+        const retryMessages: typeof llmMessages = [
+          ...llmMessages,
+          { role: "assistant" as const, content: result.nextQuestion },
+          { role: "user" as const, content: "That question was already asked. Ask a COMPLETELY DIFFERENT question on a new topic not yet discussed." },
+        ];
+        const retryResponse = await openai.chat.completions.create({
+          model: "llama-3.3-70b-versatile",
+          max_tokens: 400,
+          temperature: 0.9,
+          messages: retryMessages,
+        });
+        const retryContent = retryResponse.choices[0]?.message?.content ?? "{}";
+        const retryClean = retryContent.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+        const retryMatch = retryClean.match(/\{[\s\S]*\}/);
+        if (retryMatch) {
+          result = JSON.parse(retryMatch[0]) as ConversationResult;
+          console.log(`[ai] Retry result: ${result.nextQuestion.substring(0, 80)}`);
+        }
+      }
+    }
+
+    return result;
   } catch (err) {
     console.error("Interview conversation generation failed:", err);
   }

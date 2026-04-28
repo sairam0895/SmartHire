@@ -972,6 +972,11 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
 
   const { interviewId, jobTitle, jobDescription, conversationHistory, elapsedSeconds, durationMinutes } = parsed.data;
 
+  console.log(`[conversation] Received: ${conversationHistory.length} messages, elapsed: ${elapsedSeconds}s`);
+  if (conversationHistory.length > 0) {
+    console.log('[conversation] Last message:', JSON.stringify(conversationHistory[conversationHistory.length - 1]));
+  }
+
   let jdAnalysis: string | null = null;
   let gapAnalysis: string | null = null;
   let interviewStartedAt: Date | null = null;

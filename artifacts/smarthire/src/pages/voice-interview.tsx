@@ -1158,6 +1158,9 @@ export default function VoiceInterview() {
     const durationSecs = (data.durationMinutes ?? 30) * 60;
     const forceComplete = elapsed >= durationSecs;
 
+    console.log('[interview] Sending history:', currentConversation.length, 'messages');
+    console.log('[interview] Last 3:', JSON.stringify(currentConversation.slice(-3)));
+
     try {
       const res = await fetch(`${API_BASE}/interview-conversation`, {
         method: "POST",
@@ -1173,6 +1176,8 @@ export default function VoiceInterview() {
       });
 
       const result = (await res.json()) as ConversationApiResponse;
+      console.log('[interview] Next question received:', result.nextQuestion?.substring(0, 100));
+      console.log('[interview] History will grow to:', currentConversation.length + 1, 'after adding AI response');
 
       if (forceComplete && !result.isComplete) {
         result.isComplete = true;
