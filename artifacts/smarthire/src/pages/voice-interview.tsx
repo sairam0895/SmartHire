@@ -16,7 +16,6 @@ type Phase =
   | "speaking"
   | "submitting"
   | "complete"
-  | "resume"
   | "completed-already"
   | "expired"
   | "cancelled"
@@ -166,6 +165,8 @@ export default function VoiceInterview() {
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [showQuestion, setShowQuestion] = useState(false);
   const [activityBadgeVisible, setActivityBadgeVisible] = useState(false);
+  const [showResumePrompt, setShowResumePrompt] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -205,6 +206,8 @@ export default function VoiceInterview() {
   const multiplePersonIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const gazeConsecutiveRef = useRef(0);
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRunningRef = useRef(false);
+  const autoSaveRunningRef = useRef(false);
   const lastAnswerTimeRef = useRef<number>(Date.now());
   const silenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isSpeakingRef = useRef(false);
@@ -330,13 +333,15 @@ export default function VoiceInterview() {
 
       // Resume after disconnect — existing session detected
       const hasSession =
-        data.hasActiveSession &&
         data.conversationState &&
+        Array.isArray(data.conversationState) &&
         data.conversationState.length > 0 &&
-        (data.elapsedSeconds ?? 0) > 60;
+        data.status !== "completed" &&
+        data.status !== "cancelled" &&
+        (data.elapsedSeconds ?? 0) > 30;
 
       if (hasSession) {
-        setPhaseSync("resume");
+        setShowResumePrompt(true);
       } else if (data.scheduledAt && secondsUntilActive(data.scheduledAt) > 0) {
         setWaitingSecondsLeft(secondsUntilActive(data.scheduledAt));
         setPhaseSync("waiting");
@@ -351,6 +356,8 @@ export default function VoiceInterview() {
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────
   function cleanup() {
+    timerRunningRef.current = false;
+    autoSaveRunningRef.current = false;
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
@@ -377,8 +384,12 @@ export default function VoiceInterview() {
           streamRef.current = null;
         }
 
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+
         if (attempt > 1) {
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 1500));
         }
 
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -386,7 +397,6 @@ export default function VoiceInterview() {
             width: { ideal: 1280 },
             height: { ideal: 720 },
             facingMode: "user",
-            aspectRatio: { ideal: 16 / 9 },
           },
           audio: true,
         });
@@ -395,35 +405,42 @@ export default function VoiceInterview() {
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          videoRef.current.muted = true;
           await videoRef.current.play().catch(() => {});
         }
 
-        setIsCameraReady(true);
+        await new Promise((r) => setTimeout(r, 500));
 
-        const videoTrack = stream.getVideoTracks()[0];
-        if (videoTrack) {
-          videoTrack.onended = () => {
-            console.log("Camera track ended unexpectedly");
-            setCameraError("Camera disconnected. Click Try Again to reconnect.");
-            clearInterval(faceDetectionRef.current!);
-            speak("I notice your camera has disconnected. Please reconnect your camera to continue.");
-          };
+        if (videoRef.current && videoRef.current.readyState >= 2) {
+          setIsCameraReady(true);
+
+          const videoTrack = stream.getVideoTracks()[0];
+          if (videoTrack) {
+            videoTrack.onended = () => {
+              console.log("Camera track ended unexpectedly");
+              setCameraError("Camera disconnected. Click Try Again to reconnect.");
+              clearInterval(faceDetectionRef.current!);
+              speak("I notice your camera has disconnected. Please reconnect your camera to continue.");
+            };
+          }
+
+          console.log(`Camera ready on attempt ${attempt}`);
+          return true;
         }
 
-        console.log(`Camera started on attempt ${attempt}`);
-        return true;
+        throw new Error("Video not ready");
       } catch (err: unknown) {
         const domErr = err as { name?: string };
-        console.error(`Camera attempt ${attempt} failed:`, err);
+        console.error(`Camera attempt ${attempt}:`, (err as Error).name, (err as Error).message);
         setIsCameraReady(false);
 
         if (attempt === retries) {
           if (domErr?.name === "NotAllowedError") {
-            setCameraError("Camera permission denied. Please allow camera access and refresh.");
+            setCameraError("Camera permission denied. Click the camera icon in your browser address bar and allow access.");
           } else if (domErr?.name === "NotFoundError") {
             setCameraError("No camera found. Please connect a camera.");
           } else {
-            setCameraError("Camera unavailable. Please check your camera and try again.");
+            setCameraError("Camera unavailable. Please check your camera and refresh the page.");
           }
           return false;
         }
@@ -441,15 +458,19 @@ export default function VoiceInterview() {
   }
 
   // ─── Elapsed timer ────────────────────────────────────────────────────────
-  function startElapsedTimer() {
+  function startTimer() {
+    if (timerRunningRef.current) return;
+    timerRunningRef.current = true;
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     elapsedTimerRef.current = setInterval(() => {
-      setElapsedSeconds((prev) => {
-        const next = prev + 1;
-        elapsedSecondsRef.current = next;
-        return next;
-      });
+      elapsedSecondsRef.current += 1;
+      setElapsedSeconds((prev) => prev + 1);
     }, 1000);
+  }
+
+  function stopTimer() {
+    timerRunningRef.current = false;
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
   }
 
   // ─── Voice cache ──────────────────────────────────────────────────────────
@@ -937,13 +958,15 @@ export default function VoiceInterview() {
   }
 
   // ─── Auto-save session state ─────────────────────────────────────────────
-  function startAutoSave(interviewId: number) {
+  function startAutoSave() {
+    if (autoSaveRunningRef.current) return;
+    autoSaveRunningRef.current = true;
     if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
     autoSaveIntervalRef.current = setInterval(() => {
       const state = conversationRef.current;
       const elapsed = elapsedSecondsRef.current;
       if (state.length === 0) return;
-      fetch(`${API_BASE}/interviews/${interviewId}/save-state`, {
+      fetch(`${API_BASE}/interviews/${interviewIdRef.current}/save-state`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationState: state, elapsedSeconds: elapsed }),
@@ -952,42 +975,66 @@ export default function VoiceInterview() {
   }
 
   // ─── Resume after disconnect ──────────────────────────────────────────────
-  async function resumeInterview() {
+  async function handleResume() {
+    setShowResumePrompt(false);
+    setIsReconnecting(true);
+    setPhaseSync("loading");
+
+    // Step 1: Restore conversation history
     const data = interviewRef.current!;
-    if (data.conversationState && data.conversationState.length > 0) {
-      conversationRef.current = data.conversationState;
-      setConversationHistory([...data.conversationState]);
-    }
-    if (data.elapsedSeconds) {
-      elapsedSecondsRef.current = data.elapsedSeconds;
-      setElapsedSeconds(data.elapsedSeconds);
+    const savedHistory = data.conversationState ?? [];
+    conversationRef.current = savedHistory;
+    setConversationHistory([...savedHistory]);
+
+    // Step 2: Restore elapsed time
+    const savedElapsed = data.elapsedSeconds ?? 0;
+    elapsedSecondsRef.current = savedElapsed;
+    setElapsedSeconds(savedElapsed);
+
+    // Step 3: Init camera with retry
+    const cameraOk = await initCamera();
+
+    if (!cameraOk) {
+      setIsReconnecting(false);
+      setCameraError("Unable to start camera. Please refresh.");
+      setPhaseSync("error");
+      return;
     }
 
-    setPhaseSync("camera-starting");
-    await initCamera();
+    // Step 4: Small delay to let video render
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // Step 5: Start all monitoring
     startRecording();
-    startElapsedTimer();
+    startTimer();
     startCameraMonitoring();
     startFaceDetection();
     startGazeDetection();
     startMultiplePersonDetection();
-    startAutoSave(data.id);
+    startAutoSave();
 
-    const lastAiMsg = conversationRef.current.filter((e) => e.role === "ai").at(-1)?.text;
+    setIsReconnecting(false);
+
+    // Step 6: Speak welcome back and transition to listening
+    const lastAiMsg = savedHistory.filter((e: ConversationEntry) => e.role === "ai").at(-1)?.text;
     const resumeMsg = lastAiMsg
-      ? `Welcome back! Let us continue. My last question was: ${lastAiMsg}`
-      : "Welcome back! Let us continue the interview.";
+      ? `Welcome back! I am glad you could rejoin. Let us continue from where we left off. I had asked you: ${lastAiMsg}`
+      : "Welcome back! I am glad you could rejoin. Let us continue the interview.";
 
     setPhaseSync("speaking");
     setAiMessage(resumeMsg);
     addToConversation({ role: "ai", text: resumeMsg });
-    await speak(resumeMsg);
-    setPhaseSync("listening");
-    startListening();
+
+    setTimeout(async () => {
+      await speak(resumeMsg);
+      setPhaseSync("listening");
+      startListening();
+    }, 500);
   }
 
   // ─── Start fresh (discard previous session) ───────────────────────────────
   async function startFresh() {
+    setShowResumePrompt(false);
     const data = interviewRef.current!;
     fetch(`${API_BASE}/interviews/${data.id}/save-state`, {
       method: "POST",
@@ -1107,12 +1154,12 @@ export default function VoiceInterview() {
     setPhaseSync("camera-starting");
     await initCamera();
     startRecording();
-    startElapsedTimer();
+    startTimer();
     startCameraMonitoring();
     startFaceDetection();
     startGazeDetection();
     startMultiplePersonDetection();
-    startAutoSave(interviewIdRef.current);
+    startAutoSave();
 
     lastAnswerTimeRef.current = Date.now();
     const pKey: ClientPersonaKey = (interviewRef.current?.persona && interviewRef.current.persona in CLIENT_PERSONAS)
@@ -1232,7 +1279,8 @@ export default function VoiceInterview() {
   // ─── Submit interview ─────────────────────────────────────────────────────
   async function submitInterview() {
     setPhaseSync("submitting");
-    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    stopTimer();
+    autoSaveRunningRef.current = false;
     if (cameraCheckRef.current) clearInterval(cameraCheckRef.current);
     if (faceDetectionRef.current) clearInterval(faceDetectionRef.current);
     if (gazeIntervalRef.current) clearInterval(gazeIntervalRef.current);
@@ -1504,11 +1552,15 @@ export default function VoiceInterview() {
       {phase === "loading" && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-950">
           <div className="text-center">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center mx-auto mb-6">
-              <span className="text-white text-2xl font-black">S</span>
-            </div>
+            {!isReconnecting && (
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center mx-auto mb-6">
+                <span className="text-white text-2xl font-black">S</span>
+              </div>
+            )}
             <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-            <p className="text-gray-400 text-sm">Loading your interview...</p>
+            <p className="text-gray-400 text-sm">
+              {isReconnecting ? "Reconnecting your interview..." : "Loading your interview..."}
+            </p>
           </div>
         </div>
       )}
@@ -1920,8 +1972,8 @@ export default function VoiceInterview() {
       )}
 
       {/* ════════════════ RESUME AFTER DISCONNECT ════════════════ */}
-      {phase === "resume" && interview && (
-        <div style={{ minHeight: "100vh", backgroundColor: "#0F172A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      {showResumePrompt && interview && (
+        <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 60, backgroundColor: "#0F172A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
           <div style={{ background: "#1E293B", borderRadius: 20, padding: 48, maxWidth: 480, width: "100%", textAlign: "center", border: "1px solid #334155" }}>
             <div style={{ fontSize: 56, marginBottom: 20 }}>🔄</div>
             <h2 style={{ color: "white", fontSize: 26, fontWeight: 800, marginBottom: 12 }}>
@@ -1951,7 +2003,7 @@ export default function VoiceInterview() {
             </p>
             <div style={{ display: "flex", gap: 12 }}>
               <button
-                onClick={resumeInterview}
+                onClick={handleResume}
                 style={{ flex: 2, background: "#6366F1", border: "none", borderRadius: 10, padding: 14, color: "white", fontWeight: 700, cursor: "pointer", fontSize: 15 }}
               >
                 ▶ Resume Interview
