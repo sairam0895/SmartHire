@@ -160,9 +160,12 @@ export default function VoiceInterview() {
   const [recordingChunkCount, setRecordingChunkCount] = useState(0);
   const [cameraOff, setCameraOff] = useState(false);
   const [cameraWarnings, setCameraWarnings] = useState(0);
-  const [cameraCountdown, setCameraCountdown] = useState(30);
+  const [cameraCountdown, setCameraCountdown] = useState(60);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isFetchingTTS, setIsFetchingTTS] = useState(false);
+  const [currentQuestion, setCurrentQuestion] = useState("");
+  const [showQuestion, setShowQuestion] = useState(false);
+  const [activityBadgeVisible, setActivityBadgeVisible] = useState(false);
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -206,6 +209,7 @@ export default function VoiceInterview() {
   const silenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isSpeakingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const lastFaceWarnRef = useRef(0);
 
   // RAG — resume upload
   const [resumeUploaded, setResumeUploaded] = useState(false);
@@ -221,6 +225,13 @@ export default function VoiceInterview() {
     conversationRef.current = next;
     setConversationHistory([...next]);
   }, []);
+
+  // Silent proctoring log — never interrupts interview
+  function logSuspicious(event: string) {
+    suspiciousRef.current.push(event);
+    setActivityBadgeVisible(true);
+    setTimeout(() => setActivityBadgeVisible(false), 2000);
+  }
 
   // ── Boot ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -457,15 +468,17 @@ export default function VoiceInterview() {
     const onVisibility = () => {
       if (document.hidden && phaseRef.current !== "complete" && phaseRef.current !== "submitting" && phaseRef.current !== "rejected") {
         tabSwitchCountRef.current++;
-        suspiciousRef.current.push(`Tab switch #${tabSwitchCountRef.current}`);
-        if (tabSwitchCountRef.current === 2) {
-          speak("Please keep this window active throughout the interview.");
+        logSuspicious(`Tab switch #${tabSwitchCountRef.current}`);
+        // Only warn on 3rd switch — single or double is not suspicious
+        if (tabSwitchCountRef.current === 3) {
+          speak("Please keep this interview window active throughout the interview.");
         }
       }
     };
     const onBlur = () => {
       if (phaseRef.current !== "complete" && phaseRef.current !== "submitting" && phaseRef.current !== "rejected") {
         windowBlurRef.current++;
+        // Log silently — window blur alone is not a violation
         suspiciousRef.current.push("Window lost focus");
       }
     };
@@ -765,10 +778,11 @@ export default function VoiceInterview() {
   function startCameraMonitoring() {
     cameraCheckRef.current = setInterval(() => {
       const track = streamRef.current?.getVideoTracks()[0];
-      if (!track || track.readyState === "ended" || !track.enabled) {
+      // Only trigger on hardware disconnect — not on track.enabled toggle
+      if (!track || track.readyState === "ended") {
         if (!cameraOffRef.current) handleCameraOff();
       }
-    }, 2000);
+    }, 5000);
   }
 
   function handleCameraOff() {
@@ -786,10 +800,10 @@ export default function VoiceInterview() {
     }
 
     speak(
-      "I notice your camera has been turned off. Please turn it back on within 30 seconds to continue the interview."
+      "I notice your camera seems to have turned off. Please turn it back on when you are ready. You have 60 seconds."
     );
 
-    setCameraCountdown(30);
+    setCameraCountdown(60);
     countdownRef.current = setInterval(() => {
       setCameraCountdown((p) => {
         if (p <= 1) {
@@ -840,9 +854,11 @@ export default function VoiceInterview() {
           totalPixels++;
           if (brightness < 30) darkPixels++;
 
+          // Inclusive skin detection: handles glasses, lighting, skin tone variation
           const isSkin =
-            (r > 80 && g > 50 && b > 30 && r > g && r > b && r - b > 15 && r < 250) ||
-            (r > 50 && g > 35 && b > 20 && r > b && r - b > 10 && g > b * 0.8);
+            (r > 60 && g > 35 && b > 15 && r > g && r - b > 8) ||
+            (r > 40 && g > 25 && b > 10 && r > b && r >= g * 0.7) ||
+            (r > 80 && g > 55 && b > 35 && Math.abs(r - g) < 40 && r > b);
 
           if (isSkin) skinPixels++;
         }
@@ -850,52 +866,28 @@ export default function VoiceInterview() {
 
       const skinRatio = skinPixels / totalPixels;
       const darkRatio = darkPixels / totalPixels;
-      const faceVisible = skinRatio >= 0.02 && darkRatio < 0.60;
+      // Much lower thresholds — avoid false positives from lighting/glasses
+      const faceVisible = skinRatio >= 0.008 && darkRatio < 0.80;
 
       if (!faceVisible) {
         noFaceCountRef.current++;
-        if (noFaceCountRef.current >= 5) {
+        // 150 × 2s = 5 consecutive minutes with no face — only then act
+        if (noFaceCountRef.current >= 150) {
           noFaceCountRef.current = 0;
           faceViolationsRef.current++;
-          faceWarningRef.current = true;
-          setFaceWarning(true);
-
-          window.speechSynthesis.cancel();
+          logSuspicious(`Face absent 5+ minutes (violation #${faceViolationsRef.current})`);
 
           if (faceViolationsRef.current >= 3) {
             handleRejected("Face not visible during interview");
             return;
           }
 
-          speak(`I notice your face is not clearly visible. Please ensure your face is on camera. This is warning ${faceViolationsRef.current} of 3.`);
+          speak("I notice your face has not been visible for a while. Please make sure you are clearly on camera.");
         }
       } else {
         noFaceCountRef.current = 0;
-        if (faceWarningRef.current) {
-          faceWarningRef.current = false;
-          setFaceWarning(false);
-        }
       }
     }, 2000);
-  }
-
-  function handleFaceNotDetected() {
-    noFaceCountRef.current = 0;
-    faceViolationsRef.current++;
-    setFaceViolationCount(faceViolationsRef.current);
-    faceWarningRef.current = true;
-    setFaceWarning(true);
-
-    window.speechSynthesis.cancel();
-
-    if (faceViolationsRef.current >= 3) {
-      handleRejected("Face not visible during interview");
-      return;
-    }
-
-    speak(
-      `I notice I cannot see your face clearly. Please make sure your face is visible on camera. This is warning ${faceViolationsRef.current} of 3. Repeated violations will end the interview.`
-    );
   }
 
   async function handleRejected(reason: string = "Camera turned off during interview") {
@@ -1020,7 +1012,7 @@ export default function VoiceInterview() {
     return Math.max(0, score);
   }
 
-  // ─── Gaze detection (every 3 seconds) ───────────────────────────────────
+  // ─── Gaze detection (every 3 seconds) — silent logging only ────────────
   function startGazeDetection() {
     gazeIntervalRef.current = setInterval(() => {
       if (!videoRef.current) return;
@@ -1033,7 +1025,6 @@ export default function VoiceInterview() {
       const imageData = ctx.getImageData(0, 0, 320, 240);
       const data = imageData.data;
 
-      // Measure skin pixel distribution left vs right half
       let leftSkin = 0, rightSkin = 0;
       for (let y = 40; y < 180; y++) {
         for (let x = 80; x < 240; x++) {
@@ -1047,20 +1038,16 @@ export default function VoiceInterview() {
         }
       }
       const total = leftSkin + rightSkin;
-      if (total < 50) return; // not enough face pixels
+      if (total < 50) return;
       const asymmetry = Math.abs(leftSkin - rightSkin) / total;
 
       if (asymmetry > 0.45) {
         gazeConsecutiveRef.current++;
-        if (gazeConsecutiveRef.current >= 4) {
+        // 10 × 3s = 30 seconds looking away — log silently, never interrupt
+        if (gazeConsecutiveRef.current >= 10) {
           gazeConsecutiveRef.current = 0;
           gazeAnomalyRef.current++;
-          suspiciousRef.current.push(`Gaze anomaly #${gazeAnomalyRef.current}`);
-          if (!gazeWarnedRef.current) {
-            gazeWarnedRef.current = true;
-            speak("Please look directly at the camera.");
-            setTimeout(() => { gazeWarnedRef.current = false; }, 15000);
-          }
+          logSuspicious(`Extended gaze away at ${new Date().toLocaleTimeString()}`);
         }
       } else {
         gazeConsecutiveRef.current = 0;
@@ -1068,7 +1055,7 @@ export default function VoiceInterview() {
     }, 3000);
   }
 
-  // ─── Multiple person detection (every 5 seconds) ─────────────────────────
+  // ─── Multiple person detection (every 5 seconds) — silent logging only ──
   function startMultiplePersonDetection() {
     multiplePersonIntervalRef.current = setInterval(() => {
       if (!videoRef.current) return;
@@ -1081,7 +1068,6 @@ export default function VoiceInterview() {
       const imageData = ctx.getImageData(0, 0, 320, 240);
       const data = imageData.data;
 
-      // Cluster skin pixels horizontally — detect 2+ distinct clusters
       const skinCols: boolean[] = new Array(32).fill(false);
       for (let col = 0; col < 32; col++) {
         let skinCount = 0;
@@ -1093,22 +1079,24 @@ export default function VoiceInterview() {
         }
         skinCols[col] = skinCount > 8;
       }
-      // Count distinct clusters
-      let clusters = 0;
+
+      // Count skin cluster transitions (raised threshold to 3 to reduce false positives)
+      let transitions = 0;
       let inCluster = false;
       for (let i = 0; i < 32; i++) {
-        if (skinCols[i] && !inCluster) { clusters++; inCluster = true; }
+        if (skinCols[i] && !inCluster) { transitions++; inCluster = true; }
         else if (!skinCols[i]) inCluster = false;
       }
 
-      if (clusters >= 2) {
+      if (transitions >= 3) {
         multiPersonCountRef.current++;
-        suspiciousRef.current.push(`Multiple persons detected #${multiPersonCountRef.current}`);
-        if (!multiPersonWarnedRef.current) {
-          multiPersonWarnedRef.current = true;
-          speak("Please ensure you are alone during this interview.");
-          setTimeout(() => { multiPersonWarnedRef.current = false; }, 20000);
+        // After 10 consecutive detections (50 seconds) — log silently, never interrupt
+        if (multiPersonCountRef.current >= 10) {
+          logSuspicious(`Multiple people possibly detected at ${new Date().toLocaleTimeString()}`);
+          multiPersonCountRef.current = 0;
         }
+      } else {
+        multiPersonCountRef.current = 0;
       }
     }, 5000);
   }
@@ -1143,6 +1131,9 @@ export default function VoiceInterview() {
   async function handleDoneAnswering() {
     if (phaseRef.current !== "listening") return;
     if (!isRecordingRef.current) return;
+
+    setShowQuestion(false);
+    setCurrentQuestion("");
 
     const transcript = await stopAndTranscribe();
 
@@ -1199,6 +1190,8 @@ export default function VoiceInterview() {
       } else {
         setTopicArea(result.topicArea ?? "technical");
         setAiMessage(result.nextQuestion);
+        setCurrentQuestion(result.nextQuestion);
+        setShowQuestion(true);
         addToConversation({ role: "ai", text: result.nextQuestion });
         setPhaseSync("speaking");
         await speak(result.nextQuestion);
@@ -1363,43 +1356,25 @@ export default function VoiceInterview() {
         </div>
       )}
 
-      {/* ════════════════ FACE WARNING OVERLAY ════════════════ */}
-      {faceWarning && !["complete", "rejected", "submitting"].includes(phase) && (
+      {/* ════════════════ ACTIVITY BADGE (subtle, non-blocking) ════════════ */}
+      {activityBadgeVisible && !["complete", "rejected", "submitting", "loading", "permissions", "camera-starting", "waiting"].includes(phase) && (
         <div style={{
           position: "absolute",
-          top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: "rgba(0,0,0,0.85)",
-          zIndex: 50,
+          bottom: 100,
+          right: 16,
+          zIndex: 40,
+          backgroundColor: "rgba(15,23,42,0.85)",
+          border: "1px solid #F59E0B",
+          borderRadius: 8,
+          padding: "6px 12px",
           display: "flex",
-          flexDirection: "column",
           alignItems: "center",
-          justifyContent: "center",
-          gap: 12,
+          gap: 6,
+          backdropFilter: "blur(8px)",
+          pointerEvents: "none",
         }}>
-          <div style={{ fontSize: 48 }}>⚠️</div>
-          <h3 style={{ color: "#EF4444", fontSize: 20, fontWeight: 700 }}>
-            Face Not Detected
-          </h3>
-          <p style={{ color: "white", textAlign: "center", maxWidth: 320 }}>
-            Please ensure your face is clearly visible on camera.
-          </p>
-          <p style={{ color: "#F59E0B", fontSize: 13 }}>
-            Warning {faceViolationsRef.current} of 3
-          </p>
-          <button
-            onClick={() => { faceWarningRef.current = false; setFaceWarning(false); }}
-            style={{
-              background: "#6366F1",
-              border: "none",
-              borderRadius: 8,
-              padding: "10px 24px",
-              color: "white",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            My Face is Visible — Continue
-          </button>
+          <span style={{ fontSize: 12 }}>⚠️</span>
+          <span style={{ color: "#F59E0B", fontSize: 11, fontWeight: 600 }}>Activity noted</span>
         </div>
       )}
 
@@ -1788,6 +1763,34 @@ export default function VoiceInterview() {
                   ) : (
                     <p className="text-gray-600 text-sm italic">Your answer will appear here after you click Done...</p>
                   )}
+                </div>
+              )}
+
+              {/* Current question reference card — visible during listening */}
+              {phase === "listening" && showQuestion && currentQuestion && (
+                <div style={{
+                  backgroundColor: "rgba(15, 23, 42, 0.95)",
+                  border: "1px solid #6366F1",
+                  borderRadius: 12,
+                  padding: "14px 16px",
+                  backdropFilter: "blur(10px)",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <div style={{
+                      width: 24, height: 24, borderRadius: "50%",
+                      backgroundColor: currentPersona.avatarColor,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 11, fontWeight: 700, color: "white", flexShrink: 0,
+                    }}>
+                      {currentPersona.avatarInitial}
+                    </div>
+                    <span style={{ color: currentPersona.avatarColor, fontSize: 11, fontWeight: 600 }}>
+                      {currentPersona.name} asked:
+                    </span>
+                  </div>
+                  <p style={{ color: "white", fontSize: 14, lineHeight: 1.55, margin: 0 }}>
+                    {currentQuestion}
+                  </p>
                 </div>
               )}
 

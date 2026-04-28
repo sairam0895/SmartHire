@@ -323,7 +323,8 @@ export async function generateInterviewConversation(
   durationMinutes: number = 30,
   jdAnalysis?: string | null,
   gapAnalysis?: string | null,
-  persona?: typeof PERSONAS[keyof typeof PERSONAS]
+  persona?: typeof PERSONAS[keyof typeof PERSONAS],
+  forceNewTopicPrompt?: string
 ): Promise<ConversationResult> {
   const isTestMode = durationMinutes <= 2;
   const wrapUpAt = isTestMode
@@ -340,6 +341,11 @@ export async function generateInterviewConversation(
   const historyText = conversationHistory
     .map((m) => `[${m.role === "ai" ? "Interviewer" : "Candidate"}]: ${m.text}`)
     .join("\n\n");
+
+  const askedQuestions = conversationHistory
+    .filter(m => m.role === "ai")
+    .map((m, i) => `${i + 1}. ${m.text.substring(0, 100)}`)
+    .join("\n");
 
   if (testModeDone || (isTestMode && shouldWrapUp)) {
     return {
@@ -409,6 +415,13 @@ INTERVIEW QUALITY:
 - Probe vague answers for specific examples
 - Never accept one-word answers without probing
 - Base all questions on the JD provided
+
+REPETITION RULE:
+- Never ask the same question twice
+- Never rephrase a question already asked
+- If you have covered a topic — move to the NEXT topic
+- Track the conversation phases and move forward
+- If you are stuck — skip to the next phase immediately
 
 FLOW (by elapsed time %):
 0-15%: Warm introduction — "Hi! I am AccionHire, so lovely to meet you. No trick questions here — just a real conversation. Tell me about your journey and what you're most proud of in your career so far."
@@ -511,6 +524,11 @@ ${gapAnalysis ? (() => {
   } catch { return ""; }
 })() : ""}
 
+QUESTIONS ALREADY ASKED (NEVER repeat these):
+${askedQuestions || "(None yet — this is the start of the interview)"}
+
+STRICT RULE: You must NOT ask any question that is similar to the ones above. If you find yourself about to ask something similar — stop and ask something completely different.
+
 Return ONLY JSON no markdown:
 {
   "nextQuestion": "AccionHire response",
@@ -549,7 +567,7 @@ ${
       shouldWrapUp
         ? `The interview has reached the wrap-up threshold (${wrapUpThresholdSeconds} seconds). Please start wrapping up warmly.`
         : "What is the best next question to ask based on the candidate's responses and the JD? Cover areas not yet discussed."
-    }`;
+    }${forceNewTopicPrompt ? `\n\nIMPORTANT: ${forceNewTopicPrompt}` : ""}`;
 
   try {
     const response = await openai.chat.completions.create({

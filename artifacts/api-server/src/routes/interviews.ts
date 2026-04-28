@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq, and, desc, avg, count, or, sql } from "drizzle-orm";
-import { db, interviewsTable, questionsTable, answersTable, scorecardsTable } from "@workspace/db";
+import { db, interviewsTable, questionsTable, answersTable, scorecardsTable, usersTable } from "@workspace/db";
 import {
   CreateInterviewBody,
   GetInterviewParams,
@@ -15,6 +15,7 @@ import { z } from "zod";
 import multer from "multer";
 import { randomUUID } from "crypto";
 import { ElevenLabsClient } from "elevenlabs";
+import { sendCandidateInviteEmail, sendInterviewCompleteEmail } from "../lib/email";
 
 const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
@@ -193,6 +194,20 @@ router.post("/interviews", requireAuth, async (req, res): Promise<void> => {
           .where(eq(interviewsTable.id, interview.id));
       })
       .catch(console.error);
+  }
+
+  // Fire-and-forget candidate invite email
+  if (candidateEmail && scheduledAt) {
+    const interviewLink = `${process.env.FRONTEND_URL || ""}/interview/${candidateToken}`;
+    sendCandidateInviteEmail({
+      candidateEmail,
+      candidateName,
+      recruiterName,
+      jobTitle,
+      scheduledAt,
+      interviewLink,
+      durationMinutes: durationMinutes ?? 30,
+    }).catch(console.error);
   }
 
   res.status(201).json({
@@ -573,6 +588,29 @@ router.post("/interviews/:id/submit", async (req, res): Promise<void> => {
 
   console.log("Interview updated to completed:", params.data.id);
   console.log("Evaluation:", JSON.stringify(evaluation));
+
+  // Fire-and-forget recruiter completion email
+  if (interview.recruiterName) {
+    db.select({ email: usersTable.email })
+      .from(usersTable)
+      .where(eq(usersTable.name, interview.recruiterName))
+      .limit(1)
+      .then(([recruiter]) => {
+        if (recruiter?.email) {
+          sendInterviewCompleteEmail({
+            recruiterEmail: recruiter.email,
+            recruiterName: interview.recruiterName!,
+            candidateName: interview.candidateName,
+            jobTitle: interview.jobTitle,
+            overallScore: evaluation.overallScore,
+            verdict: evaluation.verdict,
+            interviewId: interview.id,
+            frontendUrl: process.env.FRONTEND_URL || "",
+          }).catch(console.error);
+        }
+      })
+      .catch(console.error);
+  }
 
   if (!scorecard) {
     res.status(500).json({ error: "Failed to save scorecard" });
@@ -1034,6 +1072,30 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
       .replace(/PROBE NEEDED:?/gi, "")
       .replace(/\[Internal[^\]]*\]/gi, "")
       .trim();
+
+    // Fix 1B: if question is too similar to recent AI messages, retry once with a stronger directive
+    if (!result.isComplete) {
+      const recentAIMessages = conversationHistory
+        .filter(m => m.role === "ai")
+        .slice(-5)
+        .map(m => m.text.toLowerCase());
+      const isTooSimilar = recentAIMessages.some(prev => {
+        const words = result.nextQuestion.toLowerCase().split(" ");
+        const commonWords = words.filter(w => w.length > 5 && prev.includes(w));
+        return commonWords.length > 5;
+      });
+      if (isTooSimilar) {
+        const retry = await generateInterviewConversation(
+          jobTitle, jobDescription, conversationHistory, elapsedSeconds,
+          durationMinutes ?? 30, jdAnalysis, gapAnalysis, personaConfig,
+          "The question you just generated is too similar to previous questions. Generate a COMPLETELY DIFFERENT question on a NEW topic."
+        );
+        if (retry.nextQuestion) {
+          result.nextQuestion = retry.nextQuestion;
+          result.topicArea = retry.topicArea;
+        }
+      }
+    }
 
     res.json(result);
   } catch (err) {
