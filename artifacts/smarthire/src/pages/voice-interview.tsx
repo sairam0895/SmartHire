@@ -210,6 +210,7 @@ export default function VoiceInterview() {
   const isSpeakingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastFaceWarnRef = useRef(0);
+  const isProcessingRef = useRef(false);
 
   // RAG — resume upload
   const [resumeUploaded, setResumeUploaded] = useState(false);
@@ -1131,37 +1132,47 @@ export default function VoiceInterview() {
   async function handleDoneAnswering() {
     if (phaseRef.current !== "listening") return;
     if (!isRecordingRef.current) return;
-
-    setShowQuestion(false);
-    setCurrentQuestion("");
-
-    const transcript = await stopAndTranscribe();
-
-    lastAnswerTimeRef.current = Date.now();
-    if (!transcript || transcript.trim().length < 3) {
-      setLiveTranscript("Nothing captured — please try again");
-      setTimeout(() => {
-        setLiveTranscript("");
-        startListening();
-      }, 2000);
+    if (isProcessingRef.current) {
+      console.log('[Done Answering] Already processing — ignoring duplicate call');
       return;
     }
-
-    const answerText = transcript.trim();
-    addToConversation({ role: "candidate", text: answerText });
-    setPhaseSync("thinking");
-    setLiveTranscript("");
-
-    const data = interviewRef.current!;
-    const currentConversation = [...conversationRef.current];
-    const elapsed = elapsedSecondsRef.current;
-    const durationSecs = (data.durationMinutes ?? 30) * 60;
-    const forceComplete = elapsed >= durationSecs;
-
-    console.log('[interview] Sending history:', currentConversation.length, 'messages');
-    console.log('[interview] Last 3:', JSON.stringify(currentConversation.slice(-3)));
+    isProcessingRef.current = true;
 
     try {
+      setShowQuestion(false);
+      setCurrentQuestion("");
+
+      const transcript = await stopAndTranscribe();
+
+      lastAnswerTimeRef.current = Date.now();
+      if (!transcript || transcript.trim().length < 3) {
+        setLiveTranscript("Nothing captured — please try again");
+        setTimeout(() => {
+          setLiveTranscript("");
+          startListening();
+        }, 2000);
+        return;
+      }
+
+      console.log('[Done Answering] history BEFORE adding candidate answer:', conversationRef.current.length);
+
+      const answerText = transcript.trim();
+      addToConversation({ role: "candidate", text: answerText });
+
+      console.log('[Done Answering] history AFTER adding candidate answer:', conversationRef.current.length);
+
+      setPhaseSync("thinking");
+      setLiveTranscript("");
+
+      const data = interviewRef.current!;
+      const currentConversation = [...conversationRef.current];
+      const elapsed = elapsedSecondsRef.current;
+      const durationSecs = (data.durationMinutes ?? 30) * 60;
+      const forceComplete = elapsed >= durationSecs;
+
+      console.log('[API Call] sending history length:', conversationRef.current.length);
+      console.log('[API Call] last message in history:', JSON.stringify(conversationRef.current.slice(-2)));
+
       const res = await fetch(`${API_BASE}/interview-conversation`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1176,8 +1187,7 @@ export default function VoiceInterview() {
       });
 
       const result = (await res.json()) as ConversationApiResponse;
-      console.log('[interview] Next question received:', result.nextQuestion?.substring(0, 100));
-      console.log('[interview] History will grow to:', currentConversation.length + 1, 'after adding AI response');
+      console.log('[API Response] nextQuestion:', result.nextQuestion?.substring(0, 100));
 
       if (forceComplete && !result.isComplete) {
         result.isComplete = true;
@@ -1198,6 +1208,7 @@ export default function VoiceInterview() {
         setCurrentQuestion(result.nextQuestion);
         setShowQuestion(true);
         addToConversation({ role: "ai", text: result.nextQuestion });
+        console.log('[API Call] history AFTER AI response added:', conversationRef.current.length);
         setPhaseSync("speaking");
         await speak(result.nextQuestion);
         setPhaseSync("listening");
@@ -1213,6 +1224,8 @@ export default function VoiceInterview() {
       await speak(fallback);
       setPhaseSync("listening");
       startListening();
+    } finally {
+      isProcessingRef.current = false;
     }
   }
 
