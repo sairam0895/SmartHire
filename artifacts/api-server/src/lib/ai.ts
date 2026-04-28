@@ -344,8 +344,11 @@ export async function generateInterviewConversation(
 
   const askedQuestions = conversationHistory
     .filter(m => m.role === "ai")
-    .map((m, i) => `${i + 1}. ${m.text.substring(0, 100)}`)
+    .map((m, i) => `Q${i + 1}: "${m.text.substring(0, 120)}"`)
     .join("\n");
+
+  // Compute elapsed before system prompt assembly so it can be embedded
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
 
   if (testModeDone || (isTestMode && shouldWrapUp)) {
     return {
@@ -367,7 +370,22 @@ Return ONLY valid JSON with no markdown or explanation:
 }
 
 Valid topicArea values: "introduction", "technical", "wrapup"`
-    : `You are AccionHire, a Senior Talent Acquisition Specialist with 8 years of recruiting experience.
+    : `CRITICAL INSTRUCTION — READ THIS FIRST:
+You are conducting a REAL live interview. The conversation turns in this thread show EXACTLY what has been said so far.
+
+QUESTIONS YOU HAVE ALREADY ASKED — DO NOT REPEAT:
+${askedQuestions || "(None yet — this is the very first question)"}
+
+ABSOLUTE RULES:
+1. NEVER repeat or rephrase any question listed above
+2. NEVER ask about a topic already covered
+3. Every response must be a NEW question on a NEW topic
+4. Read every turn in the conversation before responding
+5. If you cannot think of a new question → move to wrap up immediately
+
+---
+
+You are AccionHire, a Senior Talent Acquisition Specialist with 8 years of recruiting experience.
 You are conducting a REAL live screening interview for ${jobTitle}.
 
 IDENTITY — NEVER BREAK:
@@ -541,8 +559,6 @@ Return ONLY JSON no markdown:
     ? `${persona.systemPrompt}\n\n---\n\n${systemPrompt.replace(/AccionHire/g, interviewerName)}`
     : systemPrompt;
 
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-
   const userPrompt = isTestMode
     ? `Job Title: ${jobTitle}
 
@@ -554,29 +570,30 @@ Questions asked so far: ${candidateTurns} of ${maxQuestions}. ${
           ? "You have reached the question limit. Wrap up and set isComplete to true."
           : "Ask the next short, simple question."
       }`
-    : `Job Title: ${jobTitle}
-Job Description:
-${jobDescription}
+    : shouldWrapUp
+    ? `The interview has reached wrap-up time (${elapsedMinutes}m ${elapsedSeconds % 60}s elapsed of ${durationMinutes}min total). Please begin wrapping up warmly.`
+    : `Elapsed: ${elapsedMinutes}m ${elapsedSeconds % 60}s of ${durationMinutes}min total. Ask the next interview question on a NEW topic not yet covered.${forceNewTopicPrompt ? ` IMPORTANT: ${forceNewTopicPrompt}` : ""}`;
 
-Conversation so far:
-${historyText || "(No conversation yet — this is the start)"}
-
-Elapsed interview time: ${elapsedMinutes} minute${elapsedMinutes !== 1 ? "s" : ""} ${elapsedSeconds % 60} seconds (${elapsedSeconds} total seconds).
-
-${
-      shouldWrapUp
-        ? `The interview has reached the wrap-up threshold (${wrapUpThresholdSeconds} seconds). Please start wrapping up warmly.`
-        : "What is the best next question to ask based on the candidate's responses and the JD? Cover areas not yet discussed."
-    }${forceNewTopicPrompt ? `\n\nIMPORTANT: ${forceNewTopicPrompt}` : ""}`;
+  const llmMessages: Array<{ role: "system" | "assistant" | "user"; content: string }> = isTestMode
+    ? [
+        { role: "system", content: finalSystemPrompt },
+        { role: "user", content: userPrompt },
+      ]
+    : [
+        { role: "system", content: finalSystemPrompt },
+        ...conversationHistory.map(m => ({
+          role: (m.role === "ai" ? "assistant" : "user") as "assistant" | "user",
+          content: m.text,
+        })),
+        { role: "user", content: userPrompt },
+      ];
 
   try {
     const response = await openai.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       max_tokens: 400,
-      messages: [
-        { role: "system", content: finalSystemPrompt },
-        { role: "user", content: userPrompt },
-      ],
+      temperature: 0.85,
+      messages: llmMessages,
     });
 
     const content = response.choices[0]?.message?.content ?? "{}";

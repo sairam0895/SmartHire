@@ -815,7 +815,7 @@ router.post(
         return;
       }
 
-      const blob = new Blob([file.buffer], { type: "audio/webm" });
+      const blob = new Blob([new Uint8Array(file.buffer)], { type: "audio/webm" });
       const formData = new FormData();
       formData.append("file", blob, "audio.webm");
       formData.append("model", "whisper-large-v3");
@@ -1073,16 +1073,19 @@ router.post("/interview-conversation", async (req, res): Promise<void> => {
       .replace(/\[Internal[^\]]*\]/gi, "")
       .trim();
 
-    // Fix 1B: if question is too similar to recent AI messages, retry once with a stronger directive
+    // Fix 1B: if question is too similar to ANY prior AI message, retry once with a stronger directive
     if (!result.isComplete) {
-      const recentAIMessages = conversationHistory
+      const allAIMessages = conversationHistory
         .filter(m => m.role === "ai")
-        .slice(-5)
         .map(m => m.text.toLowerCase());
-      const isTooSimilar = recentAIMessages.some(prev => {
+      console.log('=== CONVERSATION DEBUG ===');
+      console.log('History received:', conversationHistory?.length, 'messages');
+      console.log('Last 3 messages:', JSON.stringify(conversationHistory?.slice(-3), null, 2));
+      console.log('Next question generated:', result.nextQuestion.substring(0, 100));
+      const isTooSimilar = allAIMessages.some(prev => {
         const words = result.nextQuestion.toLowerCase().split(" ");
-        const commonWords = words.filter(w => w.length > 5 && prev.includes(w));
-        return commonWords.length > 5;
+        const commonWords = words.filter(w => w.length > 4 && prev.includes(w));
+        return commonWords.length > 4;
       });
       if (isTooSimilar) {
         const retry = await generateInterviewConversation(
