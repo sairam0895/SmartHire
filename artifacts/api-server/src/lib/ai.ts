@@ -451,8 +451,12 @@ Return ONLY JSON:
     : systemPrompt
 
   const userPrompt = isWrapUp
-    ? 'Time is up. Wrap up now.'
-    : `Current topic: ${currentTopic.label}. Question ${questionIndexInTopic + 1} of ${currentTopic.ideal}. Ask your question now.`
+    ? 'Time is up. Wrap up warmly now. Set isComplete: true.'
+    : `INSTRUCTION: Ask about "${currentTopic.label}" now.
+Question ${questionIndexInTopic + 1} of ${currentTopic.ideal} on this topic.
+DO NOT ask about anything in the QUESTIONS ASKED list above.
+DO NOT ask about technical problems if that topic is already covered.
+Ask your question now.`
 
   const llmMessages: Array<{ role: "system" | "assistant" | "user"; content: string }> = isTestMode
     ? [
@@ -485,43 +489,80 @@ Return ONLY JSON:
 
     let result = JSON.parse(jsonMatch[0]) as ConversationResult;
 
-    // In-function dedup: if question is too similar to any prior AI message, retry at higher temperature
-    if (!isTestMode && !result.isComplete && conversationHistory.length > 0) {
-      const previousAITexts = conversationHistory
+    if (!isTestMode && !result.isComplete) {
+      const allPreviousQuestions = conversationHistory
         .filter(m => m.role === 'ai')
-        .map(m => m.text.toLowerCase());
+        .map(m => m.text.toLowerCase())
 
-      const lastThreeAI = previousAITexts.slice(-3);
-      const questionLower = result.nextQuestion.toLowerCase();
+      const isExactRepeat = allPreviousQuestions.some(
+        prev => prev.substring(0, 60) ===
+        result.nextQuestion.toLowerCase().substring(0, 60)
+      )
 
-      const topicWords = questionLower
+      const topicWords = result.nextQuestion.toLowerCase()
         .split(' ')
         .filter(w => w.length > 5)
-        .filter(w => !['could', 'would', 'about', 'their', 'which', 'there', 'where', 'being', 'having'].includes(w));
+        .filter(w => !['could', 'would', 'about', 'their', 'which',
+          'there', 'where', 'being', 'having', 'please', 'provide',
+          'specific', 'details', 'recent', 'example'].includes(w))
 
-      const isSimilar = lastThreeAI.some(prev => {
-        const matches = topicWords.filter(w => prev.includes(w));
-        return matches.length >= 3;
-      });
-      if (isSimilar) {
-        console.warn(`[ai] Duplicate detected — retrying at temperature 0.9`);
-        const retryMessages: typeof llmMessages = [
-          ...llmMessages,
-          { role: "assistant" as const, content: result.nextQuestion },
-          { role: "user" as const, content: "That question was already asked. Ask a COMPLETELY DIFFERENT question on a new topic not yet discussed." },
-        ];
-        const retryResponse = await openai.chat.completions.create({
-          model: "llama-3.3-70b-versatile",
-          max_tokens: 400,
-          temperature: 0.9,
-          messages: retryMessages,
-        });
-        const retryContent = retryResponse.choices[0]?.message?.content ?? "{}";
-        const retryClean = retryContent.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-        const retryMatch = retryClean.match(/\{[\s\S]*\}/);
-        if (retryMatch) {
-          result = JSON.parse(retryMatch[0]) as ConversationResult;
-          console.log(`[ai] Retry result: ${result.nextQuestion.substring(0, 80)}`);
+      const isSimilar = allPreviousQuestions.some(prev =>
+        topicWords.filter(w => prev.includes(w)).length >= 3
+      )
+
+      if (isExactRepeat || isSimilar) {
+        console.warn('[ai] Duplicate detected — forcing next topic')
+
+        const nextTopicIndex = Math.min(topicIndex + 1, TOPICS.length - 1)
+        const nextTopic = TOPICS[nextTopicIndex]
+
+        const retrySystem = `You are ${interviewerName}, a senior interviewer.
+You JUST asked this question — DO NOT ask it again:
+"${result.nextQuestion}"
+
+You MUST now ask about: ${nextTopic.label}
+This is a COMPLETELY DIFFERENT topic.
+Ask ONE natural question about ${nextTopic.label}.
+Do NOT ask anything related to technical problems or the previous question.
+
+Return ONLY JSON:
+{"nextQuestion": "...", "isComplete": false, "topicArea": "${nextTopic.name}"}`
+
+        try {
+          const retryResponse = await openai.chat.completions.create({
+            model: 'llama-3.3-70b-versatile',
+            max_tokens: 300,
+            temperature: 0.95,
+            messages: [
+              { role: 'system', content: retrySystem },
+              { role: 'user', content: `Ask your ${nextTopic.label} question now. Not about technical problems.` }
+            ]
+          })
+
+          const retryContent = retryResponse.choices[0]?.message?.content ?? '{}'
+          const retryClean = retryContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+          const retryMatch = retryClean.match(/\{[\s\S]*\}/)
+          if (retryMatch) {
+            const retryResult = JSON.parse(retryMatch[0]) as ConversationResult
+            console.log('[ai] Forced next topic:', nextTopic.label, '→', retryResult.nextQuestion.substring(0, 60))
+            return retryResult
+          }
+        } catch (err) {
+          console.error('[ai] Retry failed:', err)
+          const fallbacks: Record<string, string> = {
+            introduction: "What has been the highlight of your career so far?",
+            technical: "Which tools and technologies do you work with most in your day to day?",
+            problemSolving: "Tell me about a time you had to debug something particularly tricky.",
+            collaboration: "How do you typically work with developers and product teams?",
+            behavioral: "Tell me about a time you had a disagreement at work and how you handled it.",
+            careerGoals: "Where do you see yourself growing in the next couple of years?",
+            wrapup: "Thank you so much for your time today. It has been a real pleasure speaking with you. Our team will be in touch soon. All the best!"
+          }
+          return {
+            nextQuestion: fallbacks[nextTopic.name] ?? fallbacks['collaboration'],
+            isComplete: nextTopic.name === 'wrapup',
+            topicArea: nextTopic.name as ConversationResult['topicArea']
+          }
         }
       }
     }
