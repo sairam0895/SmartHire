@@ -161,7 +161,7 @@ export default function VoiceInterview() {
   const [cameraWarnings, setCameraWarnings] = useState(0);
   const [cameraCountdown, setCameraCountdown] = useState(60);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [isFetchingTTS, setIsFetchingTTS] = useState(false);
+  const [isAISpeaking, setIsAISpeaking] = useState(false);
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [showQuestion, setShowQuestion] = useState(false);
   const [activityBadgeVisible, setActivityBadgeVisible] = useState(false);
@@ -186,7 +186,6 @@ export default function VoiceInterview() {
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cameraOffRef = useRef(false);
   const cameraWarningsRef = useRef(0);
-  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
   const faceDetectionRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const noFaceCountRef = useRef(0);
   const faceWarningRef = useRef(false);
@@ -211,7 +210,6 @@ export default function VoiceInterview() {
   const lastAnswerTimeRef = useRef<number>(Date.now());
   const silenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isSpeakingRef = useRef(false);
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastFaceWarnRef = useRef(0);
   const isProcessingRef = useRef(false);
 
@@ -368,11 +366,8 @@ export default function VoiceInterview() {
     if (silenceIntervalRef.current) clearInterval(silenceIntervalRef.current);
     stopAudioRecorderInternal();
     stopCameraInternal();
-    if (currentAudioRef.current) {
-      currentAudioRef.current.pause();
-      currentAudioRef.current = null;
-    }
     window.speechSynthesis.cancel();
+    isSpeakingRef.current = false;
   }
 
   // ─── Camera ──────────────────────────────────────────────────────────────
@@ -473,18 +468,6 @@ export default function VoiceInterview() {
     if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
   }
 
-  // ─── Voice cache ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    const load = () => {
-      const v = window.speechSynthesis.getVoices();
-      if (v.length > 0) voicesRef.current = v;
-    };
-    load();
-    window.speechSynthesis.onvoiceschanged = () => { window.speechSynthesis.getVoices(); load(); };
-    window.speechSynthesis.addEventListener("voiceschanged", load);
-    return () => window.speechSynthesis.removeEventListener("voiceschanged", load);
-  }, []);
-
   // ─── Proctoring event listeners ──────────────────────────────────────────
   useEffect(() => {
     const onVisibility = () => {
@@ -562,92 +545,64 @@ export default function VoiceInterview() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [phase]);
 
-  function getPersonaVoiceId(): string {
-    const persona = interviewRef.current?.persona ?? 'technical';
-    const voiceMap: Record<string, string> = {
-      technical: 'MwUMLXurEzSN7bIfIdXF',  // Tripti — Priya
-      hr:        'MwUMLXurEzSN7bIfIdXF',  // Tripti — Meera
-      leadership:'wJ5MX7uuKXZwFqGdWM4N', // Raj    — Arjun
-      sales:     'MwUMLXurEzSN7bIfIdXF',  // Tripti — Kavya
-    };
-    return voiceMap[persona] ?? 'MwUMLXurEzSN7bIfIdXF';
-  }
-
-  function speakFallback(text: string, resolve: () => void): void {
-    const utterance = new SpeechSynthesisUtterance(text);
-    const voices = voicesRef.current.length > 0
-      ? voicesRef.current
-      : window.speechSynthesis.getVoices();
-    const voice =
-      voices.find(v => v.name.includes('Heera')) ||
-      voices.find(v => v.name.includes('Neerja')) ||
-      voices.find(v => v.lang === 'en-IN') ||
-      voices.find(v => v.lang.startsWith('en')) ||
-      null;
-    if (voice) utterance.voice = voice;
-    utterance.rate = 1.1;
-    utterance.pitch = 1.2;
-    utterance.lang = 'en-IN';
-    utterance.onend  = () => { isSpeakingRef.current = false; setTimeout(resolve, 300); };
-    utterance.onerror = () => { isSpeakingRef.current = false; setTimeout(resolve, 300); };
-    window.speechSynthesis.speak(utterance);
-  }
-
-  function speak(text: string, delayMs = 0): Promise<void> {
+  // ─── Speech (Web Speech API only) ────────────────────────────────────────
+  const speak = (text: string, onEnd?: () => void): Promise<void> => {
     return new Promise<void>((resolve) => {
       window.speechSynthesis.cancel();
-      if (currentAudioRef.current) {
-        currentAudioRef.current.pause();
-        currentAudioRef.current = null;
-      }
       isSpeakingRef.current = true;
+      setIsAISpeaking(true);
 
-      const doSpeak = async () => {
-        try {
-          const voiceId = getPersonaVoiceId();
-          setIsFetchingTTS(true);
-          const response = await fetch(`${API_BASE}/tts`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: text.substring(0, 1000), voiceId }),
-          });
-          setIsFetchingTTS(false);
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices();
 
-          if (!response.ok) throw new Error('TTS API failed');
+      const voice =
+        voices.find(v => v.name.includes('Heera')) ||
+        voices.find(v => v.name.includes('Neerja')) ||
+        voices.find(v => v.lang === 'en-IN') ||
+        voices.find(v => v.name.includes('Zira')) ||
+        voices.find(v => v.name.includes('Samantha')) ||
+        voices.find(v => v.lang.startsWith('en')) ||
+        null;
 
-          const audioBlob = await response.blob();
-          const audioUrl = URL.createObjectURL(audioBlob);
-          const audio = new Audio(audioUrl);
-          currentAudioRef.current = audio;
+      if (voice) utterance.voice = voice;
+      utterance.lang = 'en-IN';
+      utterance.rate = 1.1;
+      utterance.pitch = 1.2;
+      utterance.volume = 1.0;
 
-          audio.onended = () => {
-            URL.revokeObjectURL(audioUrl);
-            currentAudioRef.current = null;
-            isSpeakingRef.current = false;
-            setTimeout(resolve, 300);
-          };
-          audio.onerror = () => {
-            URL.revokeObjectURL(audioUrl);
-            currentAudioRef.current = null;
-            isSpeakingRef.current = false;
-            speakFallback(text, resolve);
-          };
-
-          await audio.play();
-        } catch (err) {
-          console.error('ElevenLabs speak error:', err);
-          setIsFetchingTTS(false);
-          speakFallback(text, resolve);
+      // Chrome bug fix: resume if paused mid-utterance
+      const resumeInterval = setInterval(() => {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
         }
+        if (!window.speechSynthesis.speaking) {
+          clearInterval(resumeInterval);
+        }
+      }, 200);
+
+      utterance.onend = () => {
+        clearInterval(resumeInterval);
+        isSpeakingRef.current = false;
+        setIsAISpeaking(false);
+        setTimeout(() => { if (onEnd) onEnd(); resolve(); }, 300);
       };
 
-      if (delayMs > 0) {
-        setTimeout(doSpeak, delayMs);
+      utterance.onerror = () => {
+        clearInterval(resumeInterval);
+        isSpeakingRef.current = false;
+        setIsAISpeaking(false);
+        setTimeout(() => { if (onEnd) onEnd(); resolve(); }, 300);
+      };
+
+      if (voices.length === 0) {
+        window.speechSynthesis.onvoiceschanged = () => {
+          window.speechSynthesis.speak(utterance);
+        };
       } else {
-        doSpeak();
+        window.speechSynthesis.speak(utterance);
       }
     });
-  }
+  };
 
   // ─── Whisper Audio Recording ──────────────────────────────────────────────
 
@@ -1169,7 +1124,8 @@ export default function VoiceInterview() {
     setPhaseSync("greeting");
     setAiMessage(greeting);
     addToConversation({ role: "ai", text: greeting });
-    await speak(greeting, 150);
+    await new Promise<void>((r) => setTimeout(r, 150));
+    await speak(greeting);
 
     setPhaseSync("listening");
     startListening();
@@ -1354,7 +1310,6 @@ export default function VoiceInterview() {
   const currentPersona = CLIENT_PERSONAS[personaKey];
 
   const isInterviewActive = !["loading", "waiting", "permissions", "camera-starting", "submitting", "complete", "rejected", "error"].includes(phase);
-  const isAISpeaking = phase === "greeting" || phase === "speaking";
   const answersCount = conversationHistory.filter((m) => m.role === "candidate").length;
   const isNearEnd = elapsedSeconds >= 1680;
 
@@ -1765,8 +1720,8 @@ export default function VoiceInterview() {
             <div>
               <div style={{ color: "white", fontWeight: 700, fontSize: 14 }}>{currentPersona.name}</div>
               <div style={{ color: "#64748B", fontSize: 11 }}>{currentPersona.title}</div>
-              <div style={{ color: isFetchingTTS ? "#F59E0B" : isAISpeaking ? currentPersona.avatarColor : "#94A3B8", fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
-                {isFetchingTTS ? "⏳ Preparing..." : isAISpeaking ? (
+              <div style={{ color: isAISpeaking ? currentPersona.avatarColor : "#94A3B8", fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
+                {isAISpeaking ? (
                   <>
                     <span style={{ display: "flex", gap: 2, alignItems: "center" }}>
                       {[1, 2, 3, 4].map((i) => (
