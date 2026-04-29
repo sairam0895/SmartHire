@@ -103,9 +103,14 @@ router.post("/bot/submit-interview", BotApiKeyMiddleware, async (req, res): Prom
     },
   }));
 
+  const conversationHistory = answers.flatMap((a) => [
+    { role: "ai" as const, text: a.questionText },
+    { role: "candidate" as const, text: a.answerText },
+  ]);
+
   let evaluation: Awaited<ReturnType<typeof evaluateInterview>>;
   try {
-    evaluation = await evaluateInterview(jobTitle, jobDescription, questionsAndAnswers);
+    evaluation = await evaluateInterview({ jobTitle, jobDescription, conversationHistory, durationMinutes: 30 });
   } catch (err) {
     req.log.error({ err }, "Bot: Failed to evaluate interview");
     await db.update(interviewsTable).set({ status: "pending" }).where(eq(interviewsTable.id, interview.id));
@@ -124,8 +129,8 @@ router.post("/bot/submit-interview", BotApiKeyMiddleware, async (req, res): Prom
       interviewId: interview.id,
       questionIndex: i,
       answerText: a.answerText,
-      score: evaluation.perAnswer.find((pa) => pa.questionIndex === i)?.score ?? null,
-      feedback: evaluation.perAnswer.find((pa) => pa.questionIndex === i)?.note ?? null,
+      score: null,
+      feedback: null,
       confidenceScore: a.confidenceScore ?? null,
       fillerWordCount: a.fillerWordCount ?? null,
       pauseCount: a.pauseCount ?? null,
@@ -137,17 +142,17 @@ router.post("/bot/submit-interview", BotApiKeyMiddleware, async (req, res): Prom
     .insert(scorecardsTable)
     .values({
       interviewId: interview.id,
-      technicalScore: evaluation.scores.technical,
+      technicalScore: evaluation.scores.technicalDepth,
       communicationScore: evaluation.scores.communication,
       problemSolvingScore: evaluation.scores.problemSolving,
-      roleRelevanceScore: evaluation.scores.roleRelevance,
-      speechConfidenceScore: evaluation.scores.speechConfidence ?? null,
-      overallScore: evaluation.overall,
+      roleRelevanceScore: evaluation.scores.relevantExperience,
+      speechConfidenceScore: null,
+      overallScore: evaluation.overallScore,
       verdict: evaluation.verdict,
       strengths: evaluation.strengths,
       improvements: evaluation.improvements,
-      summary: evaluation.summary,
-      recruiterNote: evaluation.recruiterNote,
+      summary: evaluation.recommendation,
+      recruiterNote: null,
     })
     .returning();
 
@@ -160,7 +165,7 @@ router.post("/bot/submit-interview", BotApiKeyMiddleware, async (req, res): Prom
     .update(interviewsTable)
     .set({
       status: "completed",
-      overallScore: evaluation.overall,
+      overallScore: evaluation.overallScore,
       verdict: evaluation.verdict,
       completedAt: new Date(),
     })

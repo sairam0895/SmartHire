@@ -28,7 +28,7 @@ function drawScoreBar(doc: PDFKit.PDFDocument, label: string, score: number, x: 
 // ─── GET /scorecard/:id — scorecard data for frontend ────────────────────────
 
 router.get("/scorecard/:id", requireAuth, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id ?? "0", 10);
+  const id = parseInt(String(req.params.id ?? "0"), 10);
   if (!id) {
     res.status(400).json({ error: "Invalid id" });
     return;
@@ -62,7 +62,7 @@ router.get("/scorecard/:id", requireAuth, async (req, res): Promise<void> => {
 // ─── GET /scorecard/:id/pdf ───────────────────────────────────────────────────
 
 router.get("/scorecard/:id/pdf", async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id ?? "0", 10);
+  const id = parseInt(String(req.params.id ?? "0"), 10);
   if (!id) {
     res.status(400).json({ error: "Invalid id" });
     return;

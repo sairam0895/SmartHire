@@ -327,63 +327,12 @@ export async function generateInterviewConversation(
   forceNewTopicPrompt?: string
 ): Promise<ConversationResult> {
   const isTestMode = durationMinutes <= 2;
-  const wrapUpAt = isTestMode
-    ? durationMinutes * 60 * 0.75
-    : durationMinutes * 60 * 0.85;
-
+  const aiCount = conversationHistory.filter(m => m.role === 'ai').length;
+  const candidateTurns = conversationHistory.filter(m => m.role === 'candidate').length;
   const maxQuestions = isTestMode ? 2 : 99;
-  const wrapUpThresholdSeconds = Math.floor(wrapUpAt);
-  const shouldWrapUp = elapsedSeconds >= wrapUpThresholdSeconds;
-
-  const candidateTurns = conversationHistory.filter((m) => m.role === "candidate").length;
   const testModeDone = isTestMode && candidateTurns >= maxQuestions;
 
-  const historyText = conversationHistory
-    .map((m) => `[${m.role === "ai" ? "Interviewer" : "Candidate"}]: ${m.text}`)
-    .join("\n\n");
-
-  const interviewerName = persona?.name ?? 'AccionHire'
-
-  const aiCount = conversationHistory.filter(m => m.role === 'ai').length
-
-  const TOPICS = [
-    { name: 'introduction',   label: 'Background & Introduction', min: 1, ideal: 2, max: 3 },
-    { name: 'technical',      label: 'Technical Skills & Tools',  min: 1, ideal: 2, max: 4 },
-    { name: 'problemSolving', label: 'Problem Solving',           min: 1, ideal: 2, max: 3 },
-    { name: 'collaboration',  label: 'Team & Collaboration',      min: 1, ideal: 1, max: 2 },
-    { name: 'behavioral',     label: 'Behavioral & Challenges',   min: 1, ideal: 1, max: 2 },
-    { name: 'careerGoals',    label: 'Career Goals',              min: 1, ideal: 1, max: 2 },
-  ]
-
-  // Calculate which topic we are on based on AI message count
-  let topicIndex = 0
-  let questionsConsumed = 0
-  for (let i = 0; i < TOPICS.length; i++) {
-    if (aiCount < questionsConsumed + TOPICS[i].ideal) {
-      topicIndex = i
-      break
-    }
-    questionsConsumed += TOPICS[i].ideal
-    topicIndex = i
-  }
-
-  const currentTopic = TOPICS[Math.min(topicIndex, TOPICS.length - 1)]
-  const questionIndexInTopic = aiCount - questionsConsumed
-  const isLastQuestionOnTopic = questionIndexInTopic >= currentTopic.ideal - 1
-  const totalIdeal = TOPICS.reduce((s, t) => s + t.ideal, 0)
-  const isWrapUp = aiCount >= totalIdeal || shouldWrapUp
-
-  const coveredTopics = TOPICS
-    .slice(0, topicIndex)
-    .map(t => t.label)
-    .join(', ') || 'None yet'
-
-  const askedList = conversationHistory
-    .filter(m => m.role === 'ai')
-    .map((m, i) => `${i + 1}. ${m.text.substring(0, 80)}`)
-    .join('\n')
-
-  if (testModeDone || (isTestMode && shouldWrapUp)) {
+  if (testModeDone) {
     return {
       nextQuestion:
         "Thank you for your time! This was a quick test interview. Our team will review your responses and get back to you soon. Best of luck!",
@@ -392,71 +341,69 @@ export async function generateInterviewConversation(
     };
   }
 
-  const systemPrompt = isTestMode
-    ? `You are AccionHire, conducting a very short 2-minute TEST interview. Ask only 2 short, simple questions total (one at a time). Keep each question brief (one sentence). Skip behavioral and situational phases — ask only basic technical intro questions. After ${maxQuestions} questions, wrap up and set isComplete to true.
+  const interviewerName = persona?.name ?? 'AccionHire';
 
-Return ONLY valid JSON with no markdown or explanation:
-{
-  "nextQuestion": "your next question here",
-  "isComplete": false,
-  "topicArea": "introduction"
-}
+  const jdSkills = (() => {
+    try {
+      const j = JSON.parse(jdAnalysis ?? '{}') as { mustHaveSkills?: string[] };
+      return j.mustHaveSkills?.slice(0, 5).join(', ') ?? '';
+    } catch { return ''; }
+  })();
 
-Valid topicArea values: "introduction", "technical", "wrapup"`
-    : `You are ${interviewerName}, a warm sharp senior interviewer at AccionHire.
-Conducting a REAL live ${jobTitle} screening interview.
-Never reveal you are AI. Never break character.
+  const getTopicInstruction = (
+    count: number,
+    title: string,
+    skills: string
+  ): string => {
+    if (count === 0) return `Warm introduction. Ask the candidate to tell you about themselves, their background, and what drew them to ${title}. Keep it friendly and relaxed.`;
+    if (count === 1) return `Ask about their hands-on experience with the core technologies for ${title}. Focus on what they have actually built or worked with — projects, coursework, internships, or professional work. Be specific: reference tools from ${skills || 'their background'}.`;
+    if (count === 2) return `Ask a foundational technical question specific to ${title}. Test core concepts someone in this role should know. Keep it practical and relevant to ${skills || 'the role'}. If they answer well, ask one brief follow-up to check depth.`;
+    if (count === 3) return `Ask them to walk through a real problem they solved or a piece of work they did. Focus on their THINKING process — how they approached it, what they considered, and what they learned.`;
+    if (count === 4) return `Ask a practical question about a different skill area from ${skills || 'the role'} — something not yet covered. Make it relevant to day-to-day ${title} work.`;
+    if (count === 5) return `Ask a simple debugging, troubleshooting, or "how would you handle this" scenario relevant to ${title}. Give a concrete situation and ask how they would investigate or fix it.`;
+    if (count === 6) return `Ask one behavioral question relevant to a ${title} role — handling feedback, tight deadlines, conflicting requirements, or working with a difficult stakeholder. Keep it practical.`;
+    if (count === 7) return `Ask about their learning approach and growth goals. What do they want to get better at in the next 1–2 years as a ${title}?`;
+    if (count >= 8) return `WRAP UP. Thank them warmly for their time. Encourage them. Set isComplete: true.`;
+    return `Ask a relevant follow-up question.`;
+  };
 
-━━━ CURRENT STATE ━━━
-AI questions asked: ${aiCount}
-Current topic: ${currentTopic.label}
-Question ${questionIndexInTopic + 1} of ${currentTopic.ideal} on this topic
-${isLastQuestionOnTopic ? '⚠️ LAST question on this topic — MUST move to next topic after this' : ''}
-Topics covered so far: ${coveredTopics}
-Time elapsed: ${Math.floor(elapsedSeconds/60)}m of ${durationMinutes}m
+  const topicInstruction = getTopicInstruction(aiCount, jobTitle, jdSkills);
+  const shouldWrapUp = aiCount >= 8;
 
-━━━ QUESTIONS ASKED — NEVER REPEAT ━━━
+  const askedList = conversationHistory
+    .filter(m => m.role === 'ai')
+    .map((m, i) => `${i + 1}. ${m.text.substring(0, 80)}`)
+    .join('\n');
+
+  const systemPrompt = `You are ${interviewerName}, a senior interviewer at AccionHire conducting a Round 1 technical screening for ${jobTitle}.
+${jdSkills ? `Key skills to assess: ${jdSkills}` : ''}
+
+YOUR TASK FOR THIS TURN:
+${topicInstruction}
+
+RULES:
+1. ONE question only
+2. The question MUST be relevant to ${jobTitle} and the skills listed above — do not ask generic CS trivia
+3. Encourage the candidate to think out loud
+4. Sound natural and warm, not like a robot reading a script
+5. NEVER ask anything similar to these already-asked questions:
 ${askedList || 'None yet'}
 
-━━━ YOUR NEXT MOVE ━━━
-${isWrapUp
-  ? 'Wrap up warmly. Thank candidate. Set isComplete: true.'
-  : `Ask about: ${currentTopic.label}
-${questionIndexInTopic === 0
-  ? 'This is the opening question for this topic.'
-  : questionIndexInTopic >= currentTopic.ideal
-    ? `⚠️ You have asked ${questionIndexInTopic} questions here. Only stay if answer was genuinely incomplete. Otherwise move on.`
-    : 'Follow up only if the answer genuinely needs clarification.'
-}
-If candidate gives a complete detailed answer → move on immediately.
-If candidate gives vague answer → one follow-up maximum.
-If candidate says skip → accept and move on.`
-}
-
-━━━ RULES ━━━
-1. ONE question only — never two in one message
-2. Never repeat any question from the list above
-3. Never return to a topic already covered
-4. If candidate skips → move on immediately, no pushing
-5. React to what candidate said — sound human and natural
-6. Follow the candidate's energy — if they give rich detailed answers move faster, if vague probe once.
-${jdAnalysis ? `\n━━━ JD FOCUS ━━━\n${(() => { try { const j = JSON.parse(jdAnalysis) as {mustHaveSkills?:string[],probeAreas?:string[]}; return `Must verify: ${j.mustHaveSkills?.join(', ')}\nProbe: ${j.probeAreas?.join(', ')}` } catch { return '' } })()}` : ''}
-${gapAnalysis ? `\n━━━ CANDIDATE GAPS ━━━\n${(() => { try { const g = JSON.parse(gapAnalysis) as {missingSkills?:string[],areasToProbe?:Array<{question:string}>}; return `Missing: ${g.missingSkills?.join(', ')}\nAsk: ${g.areasToProbe?.map(a=>a.question).slice(0,2).join(' | ')}` } catch { return '' } })()}` : ''}
-
 Return ONLY JSON:
-{"nextQuestion": "...", "isComplete": false, "topicArea": "${currentTopic.name}"}`
+{"nextQuestion": "...", "isComplete": ${shouldWrapUp}, "topicArea": "${shouldWrapUp ? 'wrapup' : 'technical'}"}`;
 
   const finalSystemPrompt = persona
-    ? `${systemPrompt}\n\n━━━ YOUR PERSONA & STYLE ━━━\n${persona.systemPrompt}`
-    : systemPrompt
+    ? `${systemPrompt}\n\nStyle: ${persona.systemPrompt.split('\n').slice(0, 5).join(' ')}`
+    : systemPrompt;
 
-  const userPrompt = isWrapUp
-    ? 'Time is up. Wrap up warmly now. Set isComplete: true.'
-    : `INSTRUCTION: Ask about "${currentTopic.label}" now.
-Question ${questionIndexInTopic + 1} of ${currentTopic.ideal} on this topic.
-DO NOT ask about anything in the QUESTIONS ASKED list above.
-DO NOT ask about technical problems if that topic is already covered.
-Ask your question now.`
+  const lastCandidateText = conversationHistory
+    .filter(m => m.role === 'candidate')
+    .slice(-1)[0]?.text ?? 'nothing yet';
+
+  const userPrompt = `The candidate just said: "${lastCandidateText}"
+
+Now: ${topicInstruction}
+Ask your question.`;
 
   const llmMessages: Array<{ role: "system" | "assistant" | "user"; content: string }> = isTestMode
     ? [
@@ -489,81 +436,51 @@ Ask your question now.`
 
     let result = JSON.parse(jsonMatch[0]) as ConversationResult;
 
+    if (shouldWrapUp) {
+      result.isComplete = true;
+      result.topicArea = 'wrapup';
+    }
+
     if (!isTestMode && !result.isComplete) {
       const allPreviousQuestions = conversationHistory
         .filter(m => m.role === 'ai')
-        .map(m => m.text.toLowerCase())
+        .map(m => m.text.toLowerCase());
 
       const isExactRepeat = allPreviousQuestions.some(
-        prev => prev.substring(0, 60) ===
-        result.nextQuestion.toLowerCase().substring(0, 60)
-      )
+        prev => prev.substring(0, 60) === result.nextQuestion.toLowerCase().substring(0, 60)
+      );
 
       const topicWords = result.nextQuestion.toLowerCase()
         .split(' ')
         .filter(w => w.length > 5)
-        .filter(w => !['could', 'would', 'about', 'their', 'which',
-          'there', 'where', 'being', 'having', 'please', 'provide',
-          'specific', 'details', 'recent', 'example'].includes(w))
+        .filter(w => !['could', 'would', 'about', 'their', 'which', 'there', 'where', 'being', 'having', 'please', 'provide', 'specific', 'details', 'recent', 'example', 'question', 'candidate', 'interviewer', 'something', 'different'].includes(w));
 
-      const isSimilar = allPreviousQuestions.some(prev =>
-        topicWords.filter(w => prev.includes(w)).length >= 3
-      )
+      const isSimilar = allPreviousQuestions.some(prev => {
+        const matches = topicWords.filter(w => prev.includes(w)).length;
+        return topicWords.length > 0 && matches >= 4 && (matches / topicWords.length) >= 0.6;
+      });
 
       if (isExactRepeat || isSimilar) {
-        console.warn('[ai] Duplicate detected — forcing next topic')
+        console.warn('[ai] Duplicate detected — using fallback');
 
-        const nextTopicIndex = Math.min(topicIndex + 1, TOPICS.length - 1)
-        const nextTopic = TOPICS[nextTopicIndex]
+        const fallbacks: Record<number, string> = {
+          0: `Tell me about yourself and what drew you to ${jobTitle}.`,
+          1: `What technologies, tools, or platforms have you worked with in ${jobTitle}?`,
+          2: `Walk me through a core concept in ${jobTitle} that you think every practitioner should understand.`,
+          3: `Tell me about a specific piece of work or project you did — what was the problem and how did you solve it?`,
+          4: `What is one area of ${jobTitle} you feel confident in, and one area you are still learning?`,
+          5: `Describe a time something went wrong in your work. How did you investigate and fix it?`,
+          6: `Tell me about a time you had to work with someone difficult or handle conflicting priorities.`,
+          7: `What do you want to learn or improve in the next 1–2 years as a ${jobTitle}?`,
+        };
 
-        const retrySystem = `You are ${interviewerName}, a senior interviewer.
-You JUST asked this question — DO NOT ask it again:
-"${result.nextQuestion}"
+        const fallbackQuestion = fallbacks[aiCount] ?? "Could you tell me more about your experience?";
 
-You MUST now ask about: ${nextTopic.label}
-This is a COMPLETELY DIFFERENT topic.
-Ask ONE natural question about ${nextTopic.label}.
-Do NOT ask anything related to technical problems or the previous question.
-
-Return ONLY JSON:
-{"nextQuestion": "...", "isComplete": false, "topicArea": "${nextTopic.name}"}`
-
-        try {
-          const retryResponse = await openai.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
-            max_tokens: 300,
-            temperature: 0.95,
-            messages: [
-              { role: 'system', content: retrySystem },
-              { role: 'user', content: `Ask your ${nextTopic.label} question now. Not about technical problems.` }
-            ]
-          })
-
-          const retryContent = retryResponse.choices[0]?.message?.content ?? '{}'
-          const retryClean = retryContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-          const retryMatch = retryClean.match(/\{[\s\S]*\}/)
-          if (retryMatch) {
-            const retryResult = JSON.parse(retryMatch[0]) as ConversationResult
-            console.log('[ai] Forced next topic:', nextTopic.label, '→', retryResult.nextQuestion.substring(0, 60))
-            return retryResult
-          }
-        } catch (err) {
-          console.error('[ai] Retry failed:', err)
-          const fallbacks: Record<string, string> = {
-            introduction: "What has been the highlight of your career so far?",
-            technical: "Which tools and technologies do you work with most in your day to day?",
-            problemSolving: "Tell me about a time you had to debug something particularly tricky.",
-            collaboration: "How do you typically work with developers and product teams?",
-            behavioral: "Tell me about a time you had a disagreement at work and how you handled it.",
-            careerGoals: "Where do you see yourself growing in the next couple of years?",
-            wrapup: "Thank you so much for your time today. It has been a real pleasure speaking with you. Our team will be in touch soon. All the best!"
-          }
-          return {
-            nextQuestion: fallbacks[nextTopic.name] ?? fallbacks['collaboration'],
-            isComplete: nextTopic.name === 'wrapup',
-            topicArea: nextTopic.name as ConversationResult['topicArea']
-          }
-        }
+        return {
+          nextQuestion: fallbackQuestion,
+          isComplete: shouldWrapUp,
+          topicArea: shouldWrapUp ? 'wrapup' : 'technical',
+        };
       }
     }
 
@@ -573,11 +490,11 @@ Return ONLY JSON:
   }
 
   return {
-    nextQuestion: shouldWrapUp || testModeDone
-      ? "Thank you so much for your time today. It has been a genuine pleasure speaking with you. Our team will carefully review your interview and get back to you with feedback soon. Best of luck!"
-      : "Could you walk me through a challenging technical problem you encountered recently and how you solved it?",
-    isComplete: shouldWrapUp || testModeDone,
-    topicArea: shouldWrapUp || testModeDone ? "wrapup" : "technical",
+    nextQuestion: shouldWrapUp
+      ? "Thank you so much for your time today. It was great speaking with you. Our team will review your interview and reach out with next steps soon. Best of luck!"
+      : `Could you walk me through how you would approach a typical problem in ${jobTitle}?`,
+    isComplete: shouldWrapUp,
+    topicArea: shouldWrapUp ? "wrapup" : "technical",
   };
 }
 
