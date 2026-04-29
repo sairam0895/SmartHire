@@ -347,30 +347,31 @@ export async function generateInterviewConversation(
   const aiCount = conversationHistory.filter(m => m.role === 'ai').length
 
   const TOPICS = [
-    { name: 'introduction',    label: 'Background & Introduction',  max: 2 },
-    { name: 'technical',       label: 'Technical Skills & Tools',   max: 2 },
-    { name: 'problemSolving',  label: 'Problem Solving',            max: 2 },
-    { name: 'collaboration',   label: 'Team & Collaboration',       max: 1 },
-    { name: 'behavioral',      label: 'Behavioral & Challenges',    max: 1 },
-    { name: 'careerGoals',     label: 'Career Goals',               max: 1 },
+    { name: 'introduction',   label: 'Background & Introduction', min: 1, ideal: 2, max: 3 },
+    { name: 'technical',      label: 'Technical Skills & Tools',  min: 1, ideal: 2, max: 4 },
+    { name: 'problemSolving', label: 'Problem Solving',           min: 1, ideal: 2, max: 3 },
+    { name: 'collaboration',  label: 'Team & Collaboration',      min: 1, ideal: 1, max: 2 },
+    { name: 'behavioral',     label: 'Behavioral & Challenges',   min: 1, ideal: 1, max: 2 },
+    { name: 'careerGoals',    label: 'Career Goals',              min: 1, ideal: 1, max: 2 },
   ]
 
   // Calculate which topic we are on based on AI message count
   let topicIndex = 0
   let questionsConsumed = 0
   for (let i = 0; i < TOPICS.length; i++) {
-    if (aiCount < questionsConsumed + TOPICS[i].max) {
+    if (aiCount < questionsConsumed + TOPICS[i].ideal) {
       topicIndex = i
       break
     }
-    questionsConsumed += TOPICS[i].max
+    questionsConsumed += TOPICS[i].ideal
     topicIndex = i
   }
 
   const currentTopic = TOPICS[Math.min(topicIndex, TOPICS.length - 1)]
   const questionIndexInTopic = aiCount - questionsConsumed
-  const isLastQuestionOnTopic = questionIndexInTopic >= currentTopic.max - 1
-  const isWrapUp = aiCount >= TOPICS.reduce((s, t) => s + t.max, 0) || shouldWrapUp
+  const isLastQuestionOnTopic = questionIndexInTopic >= currentTopic.ideal - 1
+  const totalIdeal = TOPICS.reduce((s, t) => s + t.ideal, 0)
+  const isWrapUp = aiCount >= totalIdeal || shouldWrapUp
 
   const coveredTopics = TOPICS
     .slice(0, topicIndex)
@@ -409,7 +410,7 @@ Never reveal you are AI. Never break character.
 ━━━ CURRENT STATE ━━━
 AI questions asked: ${aiCount}
 Current topic: ${currentTopic.label}
-Question ${questionIndexInTopic + 1} of ${currentTopic.max} on this topic
+Question ${questionIndexInTopic + 1} of ${currentTopic.ideal} on this topic
 ${isLastQuestionOnTopic ? '⚠️ LAST question on this topic — MUST move to next topic after this' : ''}
 Topics covered so far: ${coveredTopics}
 Time elapsed: ${Math.floor(elapsedSeconds/60)}m of ${durationMinutes}m
@@ -420,9 +421,16 @@ ${askedList || 'None yet'}
 ━━━ YOUR NEXT MOVE ━━━
 ${isWrapUp
   ? 'Wrap up warmly. Thank candidate. Set isComplete: true.'
-  : `Ask ${questionIndexInTopic === 0 ? 'the main question' : 'ONE follow-up only'} about: ${currentTopic.label}
-${isLastQuestionOnTopic ? `After candidate answers, you will move to next topic.` : ''}
-If candidate says skip/change/don't know → accept immediately and note it.`
+  : `Ask about: ${currentTopic.label}
+${questionIndexInTopic === 0
+  ? 'This is the opening question for this topic.'
+  : questionIndexInTopic >= currentTopic.ideal
+    ? `⚠️ You have asked ${questionIndexInTopic} questions here. Only stay if answer was genuinely incomplete. Otherwise move on.`
+    : 'Follow up only if the answer genuinely needs clarification.'
+}
+If candidate gives a complete detailed answer → move on immediately.
+If candidate gives vague answer → one follow-up maximum.
+If candidate says skip → accept and move on.`
 }
 
 ━━━ RULES ━━━
@@ -431,7 +439,7 @@ If candidate says skip/change/don't know → accept immediately and note it.`
 3. Never return to a topic already covered
 4. If candidate skips → move on immediately, no pushing
 5. React to what candidate said — sound human and natural
-6. Keep question concise — max 2 sentences
+6. Follow the candidate's energy — if they give rich detailed answers move faster, if vague probe once.
 ${jdAnalysis ? `\n━━━ JD FOCUS ━━━\n${(() => { try { const j = JSON.parse(jdAnalysis) as {mustHaveSkills?:string[],probeAreas?:string[]}; return `Must verify: ${j.mustHaveSkills?.join(', ')}\nProbe: ${j.probeAreas?.join(', ')}` } catch { return '' } })()}` : ''}
 ${gapAnalysis ? `\n━━━ CANDIDATE GAPS ━━━\n${(() => { try { const g = JSON.parse(gapAnalysis) as {missingSkills?:string[],areasToProbe?:Array<{question:string}>}; return `Missing: ${g.missingSkills?.join(', ')}\nAsk: ${g.areasToProbe?.map(a=>a.question).slice(0,2).join(' | ')}` } catch { return '' } })()}` : ''}
 
@@ -444,7 +452,7 @@ Return ONLY JSON:
 
   const userPrompt = isWrapUp
     ? 'Time is up. Wrap up now.'
-    : `Current topic: ${currentTopic.label}. Question ${questionIndexInTopic + 1} of ${currentTopic.max}. Ask your question now.`
+    : `Current topic: ${currentTopic.label}. Question ${questionIndexInTopic + 1} of ${currentTopic.ideal}. Ask your question now.`
 
   const llmMessages: Array<{ role: "system" | "assistant" | "user"; content: string }> = isTestMode
     ? [
