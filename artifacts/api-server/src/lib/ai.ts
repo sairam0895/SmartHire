@@ -350,25 +350,30 @@ export async function generateInterviewConversation(
     } catch { return ''; }
   })();
 
-  const getTopicInstruction = (
-    count: number,
-    title: string,
-    skills: string
-  ): string => {
-    if (count === 0) return `Warm introduction. Ask the candidate to tell you about themselves, their background, and what drew them to ${title}. Keep it friendly and relaxed.`;
-    if (count === 1) return `Ask about their hands-on experience with the core technologies for ${title}. Focus on what they have actually built or worked with — projects, coursework, internships, or professional work. Be specific: reference tools from ${skills || 'their background'}.`;
-    if (count === 2) return `Ask a foundational technical question specific to ${title}. Test core concepts someone in this role should know. Keep it practical and relevant to ${skills || 'the role'}. If they answer well, ask one brief follow-up to check depth.`;
-    if (count === 3) return `Ask them to walk through a real problem they solved or a piece of work they did. Focus on their THINKING process — how they approached it, what they considered, and what they learned.`;
-    if (count === 4) return `Ask a practical question about a different skill area from ${skills || 'the role'} — something not yet covered. Make it relevant to day-to-day ${title} work.`;
-    if (count === 5) return `Ask a simple debugging, troubleshooting, or "how would you handle this" scenario relevant to ${title}. Give a concrete situation and ask how they would investigate or fix it.`;
-    if (count === 6) return `Ask one behavioral question relevant to a ${title} role — handling feedback, tight deadlines, conflicting requirements, or working with a difficult stakeholder. Keep it practical.`;
-    if (count === 7) return `Ask about their learning approach and growth goals. What do they want to get better at in the next 1–2 years as a ${title}?`;
-    if (count >= 8) return `WRAP UP. Thank them warmly for their time. Encourage them. Set isComplete: true.`;
-    return `Ask a relevant follow-up question.`;
-  };
+ const getTopicInstruction = (
+  count: number,
+  title: string,
+  skills: string
+): string => {
+  // Cycle through topics every 8 questions, but never wrap up early
+  const cycle = count % 8;
+  if (cycle === 0) return `Warm introduction. Ask the candidate to tell you about themselves...`;
+  if (cycle === 1) return `Ask about their hands-on experience with core technologies...`;
+  if (cycle === 2) return `Ask a foundational technical question specific to ${title}...`;
+  if (cycle === 3) return `Ask them to walk through a real problem they solved...`;
+  if (cycle === 4) return `Ask a practical question about a different skill area...`;
+  if (cycle === 5) return `Ask a debugging or troubleshooting scenario...`;
+  if (cycle === 6) return `Ask one behavioral question...`;
+  if (cycle === 7) return `Ask about their learning approach and growth goals...`;
+  return `Ask a relevant follow-up question.`;
+};
 
   const topicInstruction = getTopicInstruction(aiCount, jobTitle, jdSkills);
-  const shouldWrapUp = aiCount >= 8;
+  const wrapUpAt = isTestMode
+  ? durationMinutes * 60 * 0.75
+  : durationMinutes * 60 * 0.90; // wrap up at 90% of time
+const wrapUpThresholdSeconds = Math.floor(wrapUpAt);
+const shouldWrapUp = elapsedSeconds >= wrapUpThresholdSeconds;
 
   const askedList = conversationHistory
     .filter(m => m.role === 'ai')
