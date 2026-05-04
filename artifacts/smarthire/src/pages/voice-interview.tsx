@@ -212,6 +212,9 @@ export default function VoiceInterview() {
   const isSpeakingRef = useRef(false);
   const lastFaceWarnRef = useRef(0);
   const isProcessingRef = useRef(false);
+  const isLastQuestionRef = useRef(false);
+  const autoSubmitTimerRef = useRef<NodeJS.Timeout|null>(null);
+  const greetingStartedRef = useRef(false);
 
   // RAG — resume upload
   const [resumeUploaded, setResumeUploaded] = useState(false);
@@ -364,6 +367,7 @@ export default function VoiceInterview() {
     if (multiplePersonIntervalRef.current) clearInterval(multiplePersonIntervalRef.current);
     if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
     if (silenceIntervalRef.current) clearInterval(silenceIntervalRef.current);
+    if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
     stopAudioRecorderInternal();
     stopCameraInternal();
     window.speechSynthesis.cancel();
@@ -1106,6 +1110,9 @@ export default function VoiceInterview() {
 
   // ─── Handle "Allow & Start" button ───────────────────────────────────────
   async function handleRequestPermissions() {
+    if (greetingStartedRef.current) return;
+    greetingStartedRef.current = true;
+
     setPhaseSync("camera-starting");
     await initCamera();
     startRecording();
@@ -1123,7 +1130,11 @@ export default function VoiceInterview() {
     const greeting = CLIENT_PERSONAS[pKey].greeting;
     setPhaseSync("greeting");
     setAiMessage(greeting);
-    addToConversation({ role: "ai", text: greeting });
+    if (conversationRef.current.length === 0) {
+      addToConversation({ role: "ai", text: greeting });
+    }
+    setCurrentQuestion(greeting);
+    setShowQuestion(true);
     await new Promise<void>((r) => setTimeout(r, 150));
     await speak(greeting);
 
@@ -1133,6 +1144,16 @@ export default function VoiceInterview() {
 
   // ─── Handle "Done Answering" button ──────────────────────────────────────
   async function handleDoneAnswering() {
+    if (isLastQuestionRef.current) {
+      isLastQuestionRef.current = false;
+      if (autoSubmitTimerRef.current) {
+        clearTimeout(autoSubmitTimerRef.current);
+        autoSubmitTimerRef.current = null;
+      }
+      await submitInterview();
+      return;
+    }
+
     if (phaseRef.current !== "listening") return;
     if (!isRecordingRef.current) return;
     if (isProcessingRef.current) {
@@ -1202,9 +1223,15 @@ export default function VoiceInterview() {
         setTopicArea("wrapup");
         setAiMessage(result.nextQuestion);
         addToConversation({ role: "ai", text: result.nextQuestion });
+        setCurrentQuestion(result.nextQuestion);
+        setShowQuestion(true);
         setPhaseSync("speaking");
         await speak(result.nextQuestion);
-        await submitInterview();
+        // Give candidate time to respond before submitting
+        setPhaseSync("listening");
+        startListening();
+        isLastQuestionRef.current = true;
+        return;
       } else {
         setTopicArea(result.topicArea ?? "technical");
         setAiMessage(result.nextQuestion);
