@@ -726,10 +726,14 @@ export default function VoiceInterview() {
 
   async function uploadRecording(id: number): Promise<void> {
     const chunks = recordingChunksRef.current;
-    if (chunks.length === 0) return;
+    if (chunks.length === 0) {
+      console.warn("[recording] No chunks to upload");
+      return;
+    }
 
     const blob = new Blob(chunks, { type: "video/webm" });
     const sizeMB = blob.size / (1024 * 1024);
+    console.log("[recording] Preparing upload — size:", sizeMB.toFixed(1), "MB");
 
     if (sizeMB > 500) {
       console.warn("[recording] File too large:", sizeMB.toFixed(1), "MB — skipping");
@@ -740,16 +744,33 @@ export default function VoiceInterview() {
     setUploadStatus("uploading");
 
     try {
-      const formData = new FormData();
-      formData.append("recording", blob, `interview-${id}.webm`);
+      // Step 1: Get presigned URL from backend
+      console.log("[recording] Getting presigned URL...");
+      const urlRes = await apiFetch(`/api/interviews/${id}/recording-upload-url`);
 
-      const res = await fetch(`${API_BASE}/interviews/${id}/upload-recording`, {
-        method: "POST",
-        body: formData,
+      if (!urlRes.ok) {
+        throw new Error(`Failed to get upload URL: ${urlRes.status}`);
+      }
+
+      const { uploadUrl } = await urlRes.json() as { uploadUrl: string; key: string };
+      console.log("[recording] Got presigned URL, uploading to S3...");
+
+      // Step 2: Upload directly to S3 — no Railway involved
+      const uploadRes = await fetch(uploadUrl, {
+        method: "PUT",
+        body: blob,
+        headers: { "Content-Type": "video/webm" },
       });
-      setUploadStatus(res.ok ? "done" : "failed");
+
+      if (uploadRes.ok) {
+        console.log("[recording] Upload successful ✅");
+        setUploadStatus("done");
+      } else {
+        console.error("[recording] S3 upload failed:", uploadRes.status, uploadRes.statusText);
+        setUploadStatus("failed");
+      }
     } catch (err) {
-      console.warn("[recording] Upload failed:", err);
+      console.warn("[recording] Upload error:", err);
       setUploadStatus("failed");
     }
   }

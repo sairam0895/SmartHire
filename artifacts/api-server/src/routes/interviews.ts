@@ -10,6 +10,8 @@ import {
 import { evaluateInterview, generateInterviewConversation, analyzeJobDescription, parseResume, analyzeGap, monitorAnswerQuality, checkConsistency, detectCoaching, detectPersona, PERSONAS } from "../lib/ai";
 import { extractText } from "../lib/documentParser";
 import { uploadRecording, getSignedUrl, generateRecordingKey, s3Enabled } from "../lib/s3";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl as awsGetSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { requireAuth } from "../middlewares/requireAuth";
 import { z } from "zod";
 import multer from "multer";
@@ -901,6 +903,39 @@ router.post(
     }
   }
 );
+
+const presignS3Client = new S3Client({
+  region: process.env.AWS_REGION ?? "ap-south-1",
+});
+
+router.get("/interviews/:id/recording-upload-url", requireAuth, async (req, res): Promise<void> => {
+  try {
+    const id = req.params.id;
+    const bucket = process.env.AWS_S3_BUCKET;
+
+    if (!bucket) {
+      console.error("[s3] AWS_S3_BUCKET not set");
+      res.status(500).json({ error: "S3 not configured" });
+      return;
+    }
+
+    const key = `recordings/interview-${id}-${Date.now()}.webm`;
+
+    const command = new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: "video/webm",
+    });
+
+    const uploadUrl = await awsGetSignedUrl(presignS3Client, command, { expiresIn: 3600 });
+
+    console.log("[s3] Presigned URL generated for interview:", id);
+    res.json({ uploadUrl, key });
+  } catch (err) {
+    console.error("[s3] Failed to generate presigned URL:", err);
+    res.status(500).json({ error: "Failed to generate upload URL" });
+  }
+});
 
 router.get("/interviews/:id/recording", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(String(req.params.id ?? ""), 10);
