@@ -520,34 +520,42 @@ export default function ScorecardPage() {
         })()}
 
         {/* Interview Recording */}
-        {!recordingLoading && recordingUrl && (
+        {!recordingLoading && (
           <div className="bg-white rounded-xl shadow-sm border overflow-hidden mb-6 print:hidden">
             <div className="bg-slate-50 border-b px-6 py-4 flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
                 <Video className="h-5 w-5 text-accent" />
                 Interview Recording
               </h2>
-              {recordingDuration != null && (
+              {recordingUrl && recordingDuration != null && (
                 <Badge variant="secondary" className="font-mono">
                   {Math.floor(recordingDuration / 60)}:{String(recordingDuration % 60).padStart(2, "0")}
                 </Badge>
               )}
             </div>
             <div className="p-4">
-              <video
-                src={recordingUrl}
-                controls
-                className="w-full rounded-lg"
-                style={{ maxHeight: "400px", background: "#0f172a" }}
-              />
-              <div className="flex justify-end mt-3">
-                <Button variant="outline" size="sm" asChild>
-                  <a href={recordingUrl} download={`interview-${id}-recording.webm`} className="gap-2 flex items-center">
-                    <Download className="h-4 w-4" />
-                    Download Recording
-                  </a>
-                </Button>
-              </div>
+              {recordingUrl ? (
+                <>
+                  <video
+                    src={recordingUrl}
+                    controls
+                    className="w-full rounded-lg"
+                    style={{ maxHeight: "400px", background: "#0f172a" }}
+                  />
+                  <div className="flex justify-end mt-3">
+                    <Button variant="outline" size="sm" asChild>
+                      <a href={recordingUrl} download={`interview-${id}-recording.webm`} className="gap-2 flex items-center">
+                        <Download className="h-4 w-4" />
+                        Download Recording
+                      </a>
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: "#64748B", fontSize: 13, padding: "12px 0" }}>
+                  📹 Recording not available
+                </div>
+              )}
             </div>
           </div>
         )}

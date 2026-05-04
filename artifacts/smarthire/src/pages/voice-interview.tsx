@@ -726,17 +726,13 @@ export default function VoiceInterview() {
 
   async function uploadRecording(id: number): Promise<void> {
     const chunks = recordingChunksRef.current;
-    if (chunks.length === 0) {
-      console.warn("[recording] No chunks to upload");
-      return;
-    }
+    if (chunks.length === 0) return;
 
     const blob = new Blob(chunks, { type: "video/webm" });
     const sizeMB = blob.size / (1024 * 1024);
-    console.log("[recording] Preparing upload — size:", sizeMB.toFixed(1), "MB");
+    console.log("[recording] Size:", sizeMB.toFixed(1), "MB");
 
     if (sizeMB > 500) {
-      console.warn("[recording] File too large:", sizeMB.toFixed(1), "MB — skipping");
       setUploadStatus("failed");
       return;
     }
@@ -744,33 +740,31 @@ export default function VoiceInterview() {
     setUploadStatus("uploading");
 
     try {
-      // Step 1: Get presigned URL from backend
-      console.log("[recording] Getting presigned URL...");
+      // Step 1: Get presigned URL
       const urlRes = await apiFetch(`/api/interviews/${id}/recording-upload-url`);
+      if (!urlRes.ok) throw new Error("Failed to get upload URL");
+      const { uploadUrl, key } = await urlRes.json() as { uploadUrl: string; key: string };
 
-      if (!urlRes.ok) {
-        throw new Error(`Failed to get upload URL: ${urlRes.status}`);
-      }
-
-      const { uploadUrl } = await urlRes.json() as { uploadUrl: string; key: string };
-      console.log("[recording] Got presigned URL, uploading to S3...");
-
-      // Step 2: Upload directly to S3 — no Railway involved
+      // Step 2: Upload directly to S3
       const uploadRes = await fetch(uploadUrl, {
         method: "PUT",
         body: blob,
         headers: { "Content-Type": "video/webm" },
       });
 
-      if (uploadRes.ok) {
-        console.log("[recording] Upload successful ✅");
-        setUploadStatus("done");
-      } else {
-        console.error("[recording] S3 upload failed:", uploadRes.status, uploadRes.statusText);
-        setUploadStatus("failed");
-      }
+      if (!uploadRes.ok) throw new Error(`S3 upload failed: ${uploadRes.status}`);
+      console.log("[recording] S3 upload success ✅");
+
+      // Step 3: Save the key to database
+      await apiFetch(`/api/interviews/${id}/recording-key`, {
+        method: "PATCH",
+        body: JSON.stringify({ key }),
+      });
+      console.log("[recording] Key saved to DB ✅");
+
+      setUploadStatus("done");
     } catch (err) {
-      console.warn("[recording] Upload error:", err);
+      console.warn("[recording] Upload failed:", err);
       setUploadStatus("failed");
     }
   }

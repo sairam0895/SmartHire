@@ -21,6 +21,7 @@ export const interviewsTable = pgTable("interviews", {
   durationMinutes: integer("duration_minutes"),
   timezone: varchar("timezone", { length: 100 }),
   recordingKey: varchar("recording_key", { length: 500 }),
+  recordingUrl: text("recording_url"),
   recordingDurationSeconds: integer("recording_duration_seconds"),
   candidateToken: varchar("candidate_token", { length: 100 }),
   jdAnalysis: text("jd_analysis"),

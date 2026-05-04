@@ -937,6 +937,26 @@ router.get("/interviews/:id/recording-upload-url", requireAuth, async (req, res)
   }
 });
 
+router.patch("/interviews/:id/recording-key", requireAuth, async (req, res): Promise<void> => {
+  try {
+    const id = Number(req.params.id);
+    const { key } = req.body as { key: string };
+
+    const url = `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION ?? "ap-south-1"}.amazonaws.com/${key}`;
+
+    await db
+      .update(interviewsTable)
+      .set({ recordingKey: key, recordingUrl: url })
+      .where(eq(interviewsTable.id, id));
+
+    console.log("[s3] Recording key and URL saved for interview:", id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[s3] Failed to save recording key:", err);
+    res.status(500).json({ error: "Failed to save key" });
+  }
+});
+
 router.get("/interviews/:id/recording", requireAuth, async (req, res): Promise<void> => {
   const id = parseInt(String(req.params.id ?? ""), 10);
   if (isNaN(id)) {
@@ -947,6 +967,7 @@ router.get("/interviews/:id/recording", requireAuth, async (req, res): Promise<v
   const [interview] = await db
     .select({
       recordingKey: interviewsTable.recordingKey,
+      recordingUrl: interviewsTable.recordingUrl,
       recordingDurationSeconds: interviewsTable.recordingDurationSeconds,
     })
     .from(interviewsTable)
@@ -957,18 +978,27 @@ router.get("/interviews/:id/recording", requireAuth, async (req, res): Promise<v
     return;
   }
 
-  if (!interview.recordingKey) {
-    res.status(404).json({ error: "No recording for this interview" });
+  if (!interview.recordingKey && !interview.recordingUrl) {
+    res.json({ recordingUrl: null, durationSeconds: null });
+    return;
+  }
+
+  // Return stored URL directly if available (avoids needing AWS credentials on read)
+  if (interview.recordingUrl) {
+    res.json({
+      recordingUrl: interview.recordingUrl,
+      durationSeconds: interview.recordingDurationSeconds ?? null,
+    });
     return;
   }
 
   if (!s3Enabled) {
-    res.status(503).json({ error: "AWS S3 not configured" });
+    res.json({ recordingUrl: null, durationSeconds: null });
     return;
   }
 
   try {
-    const recordingUrl = await getSignedUrl(interview.recordingKey);
+    const recordingUrl = await getSignedUrl(interview.recordingKey!);
     res.json({
       recordingUrl,
       durationSeconds: interview.recordingDurationSeconds ?? null,

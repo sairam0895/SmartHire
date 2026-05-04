@@ -14,7 +14,8 @@
       "Bash(node -e \"const el = require\\('C:/Users/SaiRamReddyKalluru/OneDrive - Accionlabs/Smart-Hire/node_modules/elevenlabs/index.js'\\); console.log\\(Object.keys\\(el\\).filter\\(k => k.includes\\('Client'\\) || k.includes\\('Eleven'\\)\\)\\)\")",
       "Bash(node *)",
       "Bash(grep -v \"^$\")",
-      "Bash(npx turbo *)"
+      "Bash(npx turbo *)",
+      "Bash(npm run *)"
     ]
   }
 }
