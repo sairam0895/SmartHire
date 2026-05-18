@@ -983,29 +983,28 @@ router.get("/interviews/:id/recording", requireAuth, async (req, res): Promise<v
     return;
   }
 
-  // Return stored URL directly if available (avoids needing AWS credentials on read)
+  // Always generate a presigned URL — bucket is private, direct URLs return 403
+  if (interview.recordingKey) {
+    try {
+      const signedUrl = await getSignedUrl(interview.recordingKey);
+      res.json({
+        recordingUrl: signedUrl,
+        durationSeconds: interview.recordingDurationSeconds ?? null,
+      });
+      return;
+    } catch (err) {
+      req.log.error({ err }, "Failed to generate presigned URL");
+      res.status(500).json({ error: "Failed to generate recording URL" });
+      return;
+    }
+  }
+
   if (interview.recordingUrl) {
     res.json({
       recordingUrl: interview.recordingUrl,
       durationSeconds: interview.recordingDurationSeconds ?? null,
     });
     return;
-  }
-
-  if (!s3Enabled) {
-    res.json({ recordingUrl: null, durationSeconds: null });
-    return;
-  }
-
-  try {
-    const recordingUrl = await getSignedUrl(interview.recordingKey!);
-    res.json({
-      recordingUrl,
-      durationSeconds: interview.recordingDurationSeconds ?? null,
-    });
-  } catch (err) {
-    req.log.error({ err }, "Failed to generate presigned URL");
-    res.status(500).json({ error: "Failed to generate recording URL" });
   }
 });
 
