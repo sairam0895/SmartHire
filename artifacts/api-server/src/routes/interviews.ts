@@ -908,7 +908,7 @@ const presignS3Client = new S3Client({
   region: process.env.AWS_REGION ?? "ap-south-1",
 });
 
-router.get("/interviews/:id/recording-upload-url", requireAuth, async (req, res): Promise<void> => {
+router.get("/interviews/:id/recording-upload-url", async (req, res): Promise<void> => {
   try {
     const id = req.params.id;
     const bucket = process.env.AWS_S3_BUCKET;
@@ -937,7 +937,7 @@ router.get("/interviews/:id/recording-upload-url", requireAuth, async (req, res)
   }
 });
 
-router.patch("/interviews/:id/recording-key", requireAuth, async (req, res): Promise<void> => {
+router.patch("/interviews/:id/recording-key", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
     const { key } = req.body as { key: string };

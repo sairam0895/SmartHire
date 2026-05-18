@@ -741,7 +741,7 @@ export default function VoiceInterview() {
 
     try {
       // Step 1: Get presigned URL
-      const urlRes = await apiFetch(`/api/interviews/${id}/recording-upload-url`);
+      const urlRes = await fetch(`${API_BASE}/interviews/${id}/recording-upload-url`);
       if (!urlRes.ok) throw new Error("Failed to get upload URL");
       const { uploadUrl, key } = await urlRes.json() as { uploadUrl: string; key: string };
 
@@ -756,8 +756,9 @@ export default function VoiceInterview() {
       console.log("[recording] S3 upload success ✅");
 
       // Step 3: Save the key to database
-      await apiFetch(`/api/interviews/${id}/recording-key`, {
+      await fetch(`${API_BASE}/interviews/${id}/recording-key`, {
         method: "PATCH",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key }),
       });
       console.log("[recording] Key saved to DB ✅");
