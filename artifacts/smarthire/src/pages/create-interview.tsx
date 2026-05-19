@@ -447,7 +447,7 @@ export default function CreateInterview() {
                                 </SelectTrigger>
                               </FormControl>
                               <SelectContent>
-                                <SelectItem value="2">2 min (Test only)</SelectItem>
+                                <SelectItem value="5">5 minutes</SelectItem>
                                 <SelectItem value="15">15 minutes</SelectItem>
                                 <SelectItem value="30">30 minutes</SelectItem>
                                 <SelectItem value="45">45 minutes</SelectItem>
