@@ -64,28 +64,28 @@ const CLIENT_PERSONAS = {
     title: 'Senior Technical Interviewer',
     avatarColor: '#6366F1',
     avatarInitial: 'P',
-    greeting: 'Hi there! I am Priya, your interviewer today from AccionHire. It is wonderful to meet you! I want this to feel like a real technical conversation — so please be yourself. There are no trick questions here, just genuine curiosity about how you think and what you have built. To kick us off — tell me about yourself and what you are most proud of in your technical journey so far.',
+    // greeting removed — AI generates dynamically now
   },
   hr: {
     name: 'Meera',
     title: 'People & Culture Specialist',
     avatarColor: '#0D9488',
     avatarInitial: 'M',
-    greeting: 'Hello! I am Meera from AccionHire, and I am so glad you could join us today. I want you to feel completely comfortable — this is just a friendly conversation to get to know you better as a person. No pressure at all. So let us start easy — tell me a little about yourself and what has brought you to this point in your career.',
+    // greeting removed — AI generates dynamically now
   },
   leadership: {
     name: 'Arjun',
     title: 'Senior Leadership Assessor',
     avatarColor: '#1E3A5F',
     avatarInitial: 'A',
-    greeting: 'Good day! I am Arjun from AccionHire. I appreciate you making the time. I like to keep these conversations direct and substantive — I find that is most respectful of your time. I am looking forward to understanding your leadership philosophy and how you think about building and scaling teams. So tell me — what has been your most significant leadership achievement and what made it challenging?',
+    // greeting removed — AI generates dynamically now
   },
   sales: {
     name: 'Kavya',
     title: 'Business Excellence Interviewer',
     avatarColor: '#EA580C',
     avatarInitial: 'K',
-    greeting: 'Hey! I am Kavya from AccionHire — great to connect! I love talking to sales and business folks because every conversation is different. I want to hear about your wins, your challenges, and how you think about building client relationships. So let us dive right in — tell me about your proudest business development moment and what drove that success.',
+    // greeting removed — AI generates dynamically now
   },
 } as const;
 
@@ -1155,19 +1155,42 @@ export default function VoiceInterview() {
     startAutoSave();
 
     lastAnswerTimeRef.current = Date.now();
-    const pKey: ClientPersonaKey = (interviewRef.current?.persona && interviewRef.current.persona in CLIENT_PERSONAS)
-      ? (interviewRef.current.persona as ClientPersonaKey)
-      : 'technical';
-    const greeting = CLIENT_PERSONAS[pKey].greeting;
-    setPhaseSync("greeting");
-    setAiMessage(greeting);
-    if (conversationRef.current.length === 0) {
-      addToConversation({ role: "ai", text: greeting });
+
+    // Generate opening message dynamically via AI — no hardcoded greeting
+    setPhaseSync("thinking");
+
+    try {
+      const data = interviewRef.current!;
+      const res = await fetch(`${API_BASE}/interview-conversation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          interviewId: data.id,
+          jobTitle: data.jobTitle,
+          jobDescription: data.jobDescription,
+          conversationHistory: [],
+          elapsedSeconds: 0,
+          durationMinutes: data.durationMinutes ?? 30,
+        }),
+      });
+      const result = (await res.json()) as ConversationApiResponse;
+      const openingMessage = result.nextQuestion;
+      addToConversation({ role: "ai", text: openingMessage });
+      setAiMessage(openingMessage);
+      setCurrentQuestion(openingMessage);
+      setShowQuestion(true);
+      setPhaseSync("speaking");
+      await speak(openingMessage);
+    } catch (err) {
+      console.error("[Opening] Failed to generate opening question:", err);
+      const fallback = `Hi! I am your interviewer at AccionHire today. Thank you for joining us. Could you start by introducing yourself and telling me about your background?`;
+      addToConversation({ role: "ai", text: fallback });
+      setAiMessage(fallback);
+      setCurrentQuestion(fallback);
+      setShowQuestion(true);
+      setPhaseSync("speaking");
+      await speak(fallback);
     }
-    setCurrentQuestion(greeting);
-    setShowQuestion(true);
-    await new Promise<void>((r) => setTimeout(r, 150));
-    await speak(greeting);
 
     setPhaseSync("listening");
     startListening();

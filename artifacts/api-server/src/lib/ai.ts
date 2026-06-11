@@ -401,15 +401,17 @@ export async function generateInterviewConversation(
     "i can't answer", "i cannot answer", "skip", "pass",
     "i don't remember", "i dont remember", "i'm unsure",
     "im unsure", "i have no experience with", "no experience",
+    "please skip", "skip this", "skip the question",
+    "next question", "can i skip", "can we skip",
+    "move on", "move to next", "i'll pass", "ill pass",
+    "i want to skip", "let's move on", "lets move on",
   ]
 
   const answerLower = lastCandidateAnswer.toLowerCase()
-  const wordCount   = lastCandidateAnswer.split(/\s+/).filter(Boolean).length
 
   const isBlank    = lastCandidateAnswer === ''
-  const isDeclined = !isBlank && (
-    declinePhrases.some(p => answerLower.includes(p)) || wordCount < 4
-  )
+  // BUG A fix: phrase-only detection — short polite answers are not skips
+  const isDeclined = !isBlank && declinePhrases.some(p => answerLower.includes(p))
   // BUG 1 fix: explicit parentheses, aiCount > 0 guard on both conditions
   const candidateSkipped = aiCount > 0 && (isBlank || isDeclined)
   void candidateSkipped
@@ -443,6 +445,7 @@ export async function generateInterviewConversation(
 
   // BLOCK 5 — getTopicInstruction using all RAG data (BUG 10, 13)
   const getTopicInstruction = (): string => {
+    console.log(`[ai] getTopicInstruction: aiCount=${aiCount} shouldWrapUp=${shouldWrapUp}`)
     if (shouldWrapUp) {
       return `WRAP UP. Thank the candidate warmly and genuinely. Tell them the team will review and reach out with next steps. Set isComplete: true.`
     }
@@ -451,12 +454,18 @@ export async function generateInterviewConversation(
     const missingSkill = missingSkills[0] ?? null
 
     if (aiCount === 0) {
-      return `Open warmly. Ask the candidate to introduce themselves and give a brief overview of their hands-on experience with ${skillList}. Keep it friendly and conversational.`
+      const personaIntro = persona
+        ? `You are ${persona.name}, ${persona.title} at AccionHire. Start by introducing yourself by name and role in one warm sentence.`
+        : `You are an interviewer at AccionHire. Introduce yourself briefly.`
+      return `${personaIntro}
+Then ask the candidate to introduce themselves and give a brief overview of their hands-on experience with ${skillList}.
+Keep it to 2-3 sentences total — your intro + one opening question. Sound warm and genuine, not scripted.`
     }
     if (aiCount === 1) {
+      // BUG B fix: always move past intro even if candidate gave a short answer at turn 0
       return gapQ
         ? `Ask this resume-gap probe question naturally: "${gapQ}"`
-        : `Ask about a specific project where they used ${skillList}. What was the problem, what did they build, what exact technologies? Insist on specifics.`
+        : `The candidate has introduced themselves (or gave a brief response). Now move forward — ask about a SPECIFIC PROJECT where they used ${skillList}. Ask: what was the project, what problem did it solve, what technologies did they use, and what was their specific contribution? Do NOT ask them to introduce themselves again. Do NOT ask generic background questions. Reference these specific skills: ${skillList}.`
     }
     if (aiCount === 2) {
       return probeArea
@@ -596,6 +605,8 @@ REMEMBER:
 
     // BLOCK 10 — tightened dedup with skill-based fallbacks (BUG 7, 12)
     if (!result.isComplete) {
+      console.log(`[ai] Dedup check — newQ: "${result.nextQuestion.substring(0, 80)}"`)
+      console.log(`[ai] Previous questions: ${previousAiQuestions.length}`)
       const stopWords = new Set([
         'could','would','about','their','which','there','where',
         'being','having','please','provide','specific','details',
@@ -896,7 +907,7 @@ export const PERSONAS = {
     company: 'AccionHire',
     avatarColor: '#6366F1',
     avatarInitial: 'P',
-    greeting: 'Hi there! I am Priya, your interviewer today from AccionHire. It is wonderful to meet you! I want this to feel like a real technical conversation — so please be yourself. There are no trick questions here, just genuine curiosity about how you think and what you have built. To kick us off — tell me about yourself and what you are most proud of in your technical journey so far.',
+    // greeting removed — AI generates dynamically now
     systemPrompt: `You are Priya, a Senior Technical Interviewer at AccionHire with 10 years of engineering and interviewing experience. You have deep technical knowledge across software engineering.
 
 YOUR STYLE:
@@ -921,7 +932,7 @@ YOUR FOCUS AREAS:
     company: 'AccionHire',
     avatarColor: '#0D9488',
     avatarInitial: 'M',
-    greeting: 'Hello! I am Meera from AccionHire, and I am so glad you could join us today. I want you to feel completely comfortable — this is just a friendly conversation to get to know you better as a person. No pressure at all. So let us start easy — tell me a little about yourself and what has brought you to this point in your career.',
+    // greeting removed — AI generates dynamically now
     systemPrompt: `You are Meera, a People & Culture Specialist at AccionHire with deep expertise in behavioral interviewing and culture assessment.
 
 YOUR STYLE:
@@ -946,7 +957,7 @@ YOUR FOCUS AREAS:
     company: 'AccionHire',
     avatarColor: '#1E3A5F',
     avatarInitial: 'A',
-    greeting: 'Good day! I am Arjun from AccionHire. I appreciate you making the time. I like to keep these conversations direct and substantive — I find that is most respectful of your time. I am looking forward to understanding your leadership philosophy and how you think about building and scaling teams. So tell me — what has been your most significant leadership achievement and what made it challenging?',
+    // greeting removed — AI generates dynamically now
     systemPrompt: `You are Arjun, a Senior Leadership Assessor at AccionHire who has evaluated hundreds of senior leaders and executives.
 
 YOUR STYLE:
@@ -972,7 +983,7 @@ YOUR FOCUS AREAS:
     company: 'AccionHire',
     avatarColor: '#EA580C',
     avatarInitial: 'K',
-    greeting: 'Hey! I am Kavya from AccionHire — great to connect! I love talking to sales and business folks because every conversation is different. I want to hear about your wins, your challenges, and how you think about building client relationships. So let us dive right in — tell me about your proudest business development moment and what drove that success.',
+    // greeting removed — AI generates dynamically now
     systemPrompt: `You are Kavya, a Business Excellence Interviewer at AccionHire who understands sales, BD, and commercial roles deeply.
 
 YOUR STYLE:

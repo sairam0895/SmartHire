@@ -1,8 +1,8 @@
 const SPEAKER_MAP: Record<string, string> = {
-  priya: 'amit',
-  meera: 'ritu',
-  arjun: 'sumit',
-  kavya: 'pooja',
+  priya: 'ritu',   // Female — sharp, professional
+  meera: 'pooja',  // Female — warm, encouraging
+  arjun: 'sumit',  // Male   — warm, professional
+  kavya: 'ritu',   // Female — energetic
 }
 const DEFAULT_SPEAKER = 'shubh'
 
@@ -11,6 +11,7 @@ export async function streamSarvamTTS(
   persona: string
 ): Promise<Buffer> {
   const speaker = SPEAKER_MAP[persona.toLowerCase()] ?? DEFAULT_SPEAKER
+  console.log(`[TTS] persona=${persona} → speaker=${speaker}`)
 
   const response = await fetch(
     'https://api.sarvam.ai/text-to-speech/stream',
