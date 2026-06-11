@@ -34,10 +34,14 @@ export function useTTS() {
   }, [])
 
   // For candidates — uses the interview access token (not a JWT)
+  // onStart fires when audio actually begins playing
+  // onEnd fires when audio finishes (or errors)
   const candidateSpeak = useCallback(async (
     text: string,
     persona: string,
-    interviewToken: string
+    interviewToken: string,
+    onStart?: () => void,
+    onEnd?: () => void,
   ): Promise<void> => {
     try {
       if (audioRef.current) {
@@ -57,12 +61,14 @@ export function useTTS() {
 
       if (!res.ok) {
         console.error('[useTTS] candidateSpeak returned', res.status)
+        onEnd?.()
         return
       }
 
-      await playBlob(audioRef, res)
+      await playBlob(audioRef, res, onStart, onEnd)
     } catch (err) {
       console.error('[useTTS] candidateSpeak failed silently:', err)
+      onEnd?.()
       // TTS failure must NEVER block the interview flow
     }
   }, [])
@@ -77,24 +83,41 @@ export function useTTS() {
   return { speak, candidateSpeak, stop }
 }
 
+// Resolves when audio ENDS (not when it starts).
+// onStart fires on audio.onplay — when audio actually begins.
+// onEnd fires on audio.onended / onerror / play-rejected.
 async function playBlob(
   audioRef: React.MutableRefObject<HTMLAudioElement | null>,
-  res: Response
+  res: Response,
+  onStart?: () => void,
+  onEnd?: () => void,
 ): Promise<void> {
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
   const audio = new Audio(url)
   audioRef.current = audio
 
-  audio.onended = () => {
-    URL.revokeObjectURL(url)
-    audioRef.current = null
-  }
-  audio.onerror = () => {
-    console.error('[useTTS] Audio playback error')
-    URL.revokeObjectURL(url)
-    audioRef.current = null
-  }
+  await new Promise<void>((resolve) => {
+    audio.onplay = () => onStart?.()
 
-  await audio.play()
+    audio.onended = () => {
+      URL.revokeObjectURL(url)
+      audioRef.current = null
+      onEnd?.()
+      resolve()
+    }
+    audio.onerror = () => {
+      URL.revokeObjectURL(url)
+      audioRef.current = null
+      onEnd?.()
+      resolve()
+    }
+    // play() rejection (e.g. browser autoplay policy) — clean up immediately
+    audio.play().catch(() => {
+      URL.revokeObjectURL(url)
+      audioRef.current = null
+      onEnd?.()
+      resolve()
+    })
+  })
 }

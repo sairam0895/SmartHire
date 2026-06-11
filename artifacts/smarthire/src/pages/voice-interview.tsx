@@ -252,6 +252,14 @@ export default function VoiceInterview() {
       return;
     }
     loadInterview();
+    // Pre-warm Sarvam TTS connection so first-speak latency is shorter
+    if (urlToken) {
+      fetch(`${API_BASE}/tts/speak`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${urlToken}` },
+        body: JSON.stringify({ text: 'Hello', persona: 'priya' }),
+      }).catch(() => {/* ignore */})
+    }
     return () => cleanup();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -610,13 +618,20 @@ export default function VoiceInterview() {
     const personaName = CLIENT_PERSONAS[pKey].name.toLowerCase();
     const token = urlToken ?? '';
 
-    isSpeakingRef.current = true;
-    setIsAISpeaking(true);
     try {
-      await candidateSpeak(text, personaName, token);
-    } finally {
+      // isAISpeaking is set via onStart (when audio actually begins) not at fetch time
+      await candidateSpeak(
+        text,
+        personaName,
+        token,
+        () => { isSpeakingRef.current = true; setIsAISpeaking(true); },
+        () => { isSpeakingRef.current = false; setIsAISpeaking(false); },
+      );
+    } catch (err) {
+      console.error('[speak] TTS error:', err);
       isSpeakingRef.current = false;
       setIsAISpeaking(false);
+    } finally {
       if (onEnd) onEnd();
     }
   };
