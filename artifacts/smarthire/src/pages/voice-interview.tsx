@@ -232,7 +232,7 @@ export default function VoiceInterview() {
     setConversationHistory([...next]);
   }, []);
 
-  const { speak: speakTTS, stop: stopTTS } = useTTS();
+  const { candidateSpeak, stop: stopTTS } = useTTS();
 
   // Stop TTS audio on unmount
   useEffect(() => { return () => stopTTS() }, [stopTTS]);
@@ -376,7 +376,9 @@ export default function VoiceInterview() {
     if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
     stopAudioRecorderInternal();
     stopCameraInternal();
-    window.speechSynthesis.cancel();
+    // PHASE1-WEBSPEECH: replaced by Sarvam AI TTS
+    // window.speechSynthesis.cancel();
+    stopTTS();
     isSpeakingRef.current = false;
   }
 
@@ -606,11 +608,12 @@ export default function VoiceInterview() {
       ? (interviewRef.current.persona as ClientPersonaKey)
       : 'technical';
     const personaName = CLIENT_PERSONAS[pKey].name.toLowerCase();
+    const token = urlToken ?? '';
 
     isSpeakingRef.current = true;
     setIsAISpeaking(true);
     try {
-      await speakTTS(text, personaName);
+      await candidateSpeak(text, personaName, token);
     } finally {
       isSpeakingRef.current = false;
       setIsAISpeaking(false);
@@ -795,7 +798,9 @@ export default function VoiceInterview() {
   function handleCameraOff() {
     cameraOffRef.current = true;
     setCameraOff(true);
-    window.speechSynthesis.cancel();
+    // PHASE1-WEBSPEECH: replaced by Sarvam AI TTS
+    // window.speechSynthesis.cancel();
+    stopTTS();
 
     cameraWarningsRef.current += 1;
     const warnings = cameraWarningsRef.current;
