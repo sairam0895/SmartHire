@@ -15,7 +15,10 @@
       "Bash(node *)",
       "Bash(grep -v \"^$\")",
       "Bash(npx turbo *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(git commit *)",
+      "Bash(pnpm approve-builds *)",
+      "Bash(Select-Object Name)"
     ]
   }
 }

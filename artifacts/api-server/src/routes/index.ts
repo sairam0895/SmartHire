@@ -5,6 +5,7 @@ import botRouter from "./bot";
 import pdfRouter from "./pdf";
 import livekitRouter from "./livekit";
 import authRouter from "./auth";
+import ttsRouter from "./tts";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(interviewsRouter);
 router.use(botRouter);
 router.use(pdfRouter);
 router.use(livekitRouter);
+router.use('/api/tts', ttsRouter);
 
 export default router;

@@ -4,6 +4,12 @@ import { logger } from "./lib/logger";
 import { startBotServer } from "./bot/botServer";
 import { seedDefaultUsers } from "./lib/seed";
 
+if (!process.env.SARVAM_API_KEY) {
+  console.warn(
+    '[WARN] SARVAM_API_KEY not set — TTS will fail at runtime'
+  )
+}
+
 const rawPort = process.env["PORT"];
 let port = Number(rawPort ?? 8080);
 

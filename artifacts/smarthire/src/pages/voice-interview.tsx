@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useLocation, useParams } from "wouter";
 import { apiUrl, apiFetch } from "@/lib/api";
 import { Logo } from "../components/Logo";
+import { useTTS } from "../hooks/useTTS";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -230,6 +231,11 @@ export default function VoiceInterview() {
     conversationRef.current = next;
     setConversationHistory([...next]);
   }, []);
+
+  const { speak: speakTTS, stop: stopTTS } = useTTS();
+
+  // Stop TTS audio on unmount
+  useEffect(() => { return () => stopTTS() }, [stopTTS]);
 
   // Silent proctoring log — never interrupts interview
   function logSuspicious(event: string) {
@@ -549,63 +555,67 @@ export default function VoiceInterview() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [phase]);
 
-  // ─── Speech (Web Speech API only) ────────────────────────────────────────
-  const speak = (text: string, onEnd?: () => void): Promise<void> => {
-    return new Promise<void>((resolve) => {
-      window.speechSynthesis.cancel();
-      isSpeakingRef.current = true;
-      setIsAISpeaking(true);
+  // ─── Speech (Sarvam AI TTS) ───────────────────────────────────────────────
+  // PHASE1-TTS: disabled in Phase 2
+  // const speak = (text: string, onEnd?: () => void): Promise<void> => {
+  //   return new Promise<void>((resolve) => {
+  //     window.speechSynthesis.cancel();
+  //     isSpeakingRef.current = true;
+  //     setIsAISpeaking(true);
+  //     const utterance = new SpeechSynthesisUtterance(text);
+  //     const voices = window.speechSynthesis.getVoices();
+  //     const voice =
+  //       voices.find(v => v.name.includes('Heera')) ||
+  //       voices.find(v => v.name.includes('Neerja')) ||
+  //       voices.find(v => v.lang === 'en-IN') ||
+  //       voices.find(v => v.name.includes('Zira')) ||
+  //       voices.find(v => v.name.includes('Samantha')) ||
+  //       voices.find(v => v.lang.startsWith('en')) ||
+  //       null;
+  //     if (voice) utterance.voice = voice;
+  //     utterance.lang = 'en-IN';
+  //     utterance.rate = 1.1;
+  //     utterance.pitch = 1.2;
+  //     utterance.volume = 1.0;
+  //     const resumeInterval = setInterval(() => {
+  //       if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+  //       if (!window.speechSynthesis.speaking) clearInterval(resumeInterval);
+  //     }, 200);
+  //     utterance.onend = () => {
+  //       clearInterval(resumeInterval);
+  //       isSpeakingRef.current = false;
+  //       setIsAISpeaking(false);
+  //       setTimeout(() => { if (onEnd) onEnd(); resolve(); }, 300);
+  //     };
+  //     utterance.onerror = () => {
+  //       clearInterval(resumeInterval);
+  //       isSpeakingRef.current = false;
+  //       setIsAISpeaking(false);
+  //       setTimeout(() => { if (onEnd) onEnd(); resolve(); }, 300);
+  //     };
+  //     if (voices.length === 0) {
+  //       window.speechSynthesis.onvoiceschanged = () => { window.speechSynthesis.speak(utterance); };
+  //     } else {
+  //       window.speechSynthesis.speak(utterance);
+  //     }
+  //   });
+  // };
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      const voices = window.speechSynthesis.getVoices();
+  const speak = async (text: string, onEnd?: () => void): Promise<void> => {
+    const pKey: ClientPersonaKey = (interviewRef.current?.persona && interviewRef.current.persona in CLIENT_PERSONAS)
+      ? (interviewRef.current.persona as ClientPersonaKey)
+      : 'technical';
+    const personaName = CLIENT_PERSONAS[pKey].name.toLowerCase();
 
-      const voice =
-        voices.find(v => v.name.includes('Heera')) ||
-        voices.find(v => v.name.includes('Neerja')) ||
-        voices.find(v => v.lang === 'en-IN') ||
-        voices.find(v => v.name.includes('Zira')) ||
-        voices.find(v => v.name.includes('Samantha')) ||
-        voices.find(v => v.lang.startsWith('en')) ||
-        null;
-
-      if (voice) utterance.voice = voice;
-      utterance.lang = 'en-IN';
-      utterance.rate = 1.1;
-      utterance.pitch = 1.2;
-      utterance.volume = 1.0;
-
-      // Chrome bug fix: resume if paused mid-utterance
-      const resumeInterval = setInterval(() => {
-        if (window.speechSynthesis.paused) {
-          window.speechSynthesis.resume();
-        }
-        if (!window.speechSynthesis.speaking) {
-          clearInterval(resumeInterval);
-        }
-      }, 200);
-
-      utterance.onend = () => {
-        clearInterval(resumeInterval);
-        isSpeakingRef.current = false;
-        setIsAISpeaking(false);
-        setTimeout(() => { if (onEnd) onEnd(); resolve(); }, 300);
-      };
-
-      utterance.onerror = () => {
-        clearInterval(resumeInterval);
-        isSpeakingRef.current = false;
-        setIsAISpeaking(false);
-        setTimeout(() => { if (onEnd) onEnd(); resolve(); }, 300);
-      };
-
-      if (voices.length === 0) {
-        window.speechSynthesis.onvoiceschanged = () => {
-          window.speechSynthesis.speak(utterance);
-        };
-      } else {
-        window.speechSynthesis.speak(utterance);
-      }
-    });
+    isSpeakingRef.current = true;
+    setIsAISpeaking(true);
+    try {
+      await speakTTS(text, personaName);
+    } finally {
+      isSpeakingRef.current = false;
+      setIsAISpeaking(false);
+      if (onEnd) onEnd();
+    }
   };
 
   // ─── Whisper Audio Recording ──────────────────────────────────────────────
