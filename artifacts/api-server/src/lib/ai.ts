@@ -326,176 +326,345 @@ export async function generateInterviewConversation(
   persona?: typeof PERSONAS[keyof typeof PERSONAS],
   forceNewTopicPrompt?: string
 ): Promise<ConversationResult> {
-  const isTestMode = durationMinutes <= 2;
-  const aiCount = conversationHistory.filter(m => m.role === 'ai').length;
-  const candidateTurns = conversationHistory.filter(m => m.role === 'candidate').length;
-  const maxQuestions = isTestMode ? 2 : 99;
-  const testModeDone = isTestMode && candidateTurns >= maxQuestions;
+  // BLOCK 1
+  const isTestMode = durationMinutes <= 2
+  const aiCount = conversationHistory.filter(m => m.role === 'ai').length
+  const candidateTurns = conversationHistory.filter(m => m.role === 'candidate').length
+  const shouldWrapUp = aiCount >= 8
 
-  if (testModeDone) {
+  if (isTestMode && candidateTurns >= 2) {
     return {
-      nextQuestion:
-        "Thank you for your time! This was a quick test interview. Our team will review your responses and get back to you soon. Best of luck!",
+      nextQuestion: "Thank you for your time! This was a quick test interview. Our team will review your responses and get back to you soon. Best of luck!",
       isComplete: true,
       topicArea: "wrapup",
-    };
+    }
   }
 
-  const interviewerName = persona?.name ?? 'AccionHire';
+  // BLOCK 2 — parse all RAG data (BUG 4)
+  type ParsedJd = {
+    mustHaveSkills?: string[]
+    technicalAreas?: string[]
+    probeAreas?: string[]
+    experienceLevel?: string
+    behavioralTraits?: string[]
+    redFlags?: string[]
+  }
+  type ParsedGap = {
+    missingSkills?: string[]
+    matchedSkills?: string[]
+    areasToProbe?: Array<{ area: string; question: string }>
+    fitSummary?: string
+    fitScore?: number
+  }
 
-  const jdSkills = (() => {
-    try {
-      const j = JSON.parse(jdAnalysis ?? '{}') as { mustHaveSkills?: string[] };
-      return j.mustHaveSkills?.slice(0, 5).join(', ') ?? '';
-    } catch { return ''; }
-  })();
+  const parsedJd: ParsedJd = (() => {
+    try { return JSON.parse(jdAnalysis ?? '{}') as ParsedJd } catch { return {} }
+  })()
 
-  const getTopicInstruction = (
-    count: number,
-    title: string,
-    skills: string
-  ): string => {
-    if (count === 0) return `Warm introduction. Ask the candidate to tell you about themselves, their background, and what drew them to ${title}. Keep it friendly and relaxed.`;
-    if (count === 1) return `Ask about their hands-on experience with the core technologies for ${title}. Focus on what they have actually built or worked with — projects, coursework, internships, or professional work. Be specific: reference tools from ${skills || 'their background'}.`;
-    if (count === 2) return `Ask a foundational technical question specific to ${title}. Test core concepts someone in this role should know. Keep it practical and relevant to ${skills || 'the role'}. If they answer well, ask one brief follow-up to check depth.`;
-    if (count === 3) return `Ask them to walk through a real problem they solved or a piece of work they did. Focus on their THINKING process — how they approached it, what they considered, and what they learned.`;
-    if (count === 4) return `Ask a practical question about a different skill area from ${skills || 'the role'} — something not yet covered. Make it relevant to day-to-day ${title} work.`;
-    if (count === 5) return `Ask a simple debugging, troubleshooting, or "how would you handle this" scenario relevant to ${title}. Give a concrete situation and ask how they would investigate or fix it.`;
-    if (count === 6) return `Ask one behavioral question relevant to a ${title} role — handling feedback, tight deadlines, conflicting requirements, or working with a difficult stakeholder. Keep it practical.`;
-    if (count === 7) return `Ask about their learning approach and growth goals. What do they want to get better at in the next 1–2 years as a ${title}?`;
-    if (count >= 8) return `WRAP UP. Thank them warmly for their time. Encourage them. Set isComplete: true.`;
-    return `Ask a relevant follow-up question.`;
-  };
+  const parsedGap: ParsedGap = (() => {
+    try { return JSON.parse(gapAnalysis ?? '{}') as ParsedGap } catch { return {} }
+  })()
 
-  const topicInstruction = getTopicInstruction(aiCount, jobTitle, jdSkills);
-  const shouldWrapUp = aiCount >= 8;
+  const allSkills = [
+    ...(parsedJd.mustHaveSkills ?? []),
+    ...(parsedJd.technicalAreas ?? []),
+  ]
+  const jdSkills        = allSkills.join(', ')
+  const probeAreas      = parsedJd.probeAreas ?? []
+  const experienceLevel = parsedJd.experienceLevel ?? 'mid-level'
+  const missingSkills   = parsedGap.missingSkills ?? []
+  const matchedSkills   = parsedGap.matchedSkills ?? []
+  const areasToProbe    = parsedGap.areasToProbe ?? []
+  const skillList       = jdSkills || jobTitle
 
+  // BLOCK 3 — smart answer classification (BUG 1, 2, 3)
+  const lastCandidateAnswer = conversationHistory
+    .filter(m => m.role === 'candidate')
+    .slice(-1)[0]?.text?.trim() ?? ''
+
+  const lastAiQuestion = conversationHistory
+    .filter(m => m.role === 'ai')
+    .slice(-1)[0]?.text ?? ''
+
+  const secondToLastAiQuestion = conversationHistory
+    .filter(m => m.role === 'ai')
+    .slice(-2)[0]?.text ?? ''
+  const alreadyReAsked = lastAiQuestion !== '' && lastAiQuestion === secondToLastAiQuestion
+
+  const declinePhrases = [
+    "i don't know", "i dont know", "not sure", "no idea",
+    "don't know", "dont know", "i have no idea", "no clue",
+    "i'm not sure", "im not sure", "i am not sure",
+    "i don't have experience", "i dont have experience",
+    "i haven't used", "i havent used", "never used",
+    "i'm not familiar", "im not familiar", "not familiar",
+    "i can't answer", "i cannot answer", "skip", "pass",
+    "i don't remember", "i dont remember", "i'm unsure",
+    "im unsure", "i have no experience with", "no experience",
+  ]
+
+  const answerLower = lastCandidateAnswer.toLowerCase()
+  const wordCount   = lastCandidateAnswer.split(/\s+/).filter(Boolean).length
+
+  const isBlank    = lastCandidateAnswer === ''
+  const isDeclined = !isBlank && (
+    declinePhrases.some(p => answerLower.includes(p)) || wordCount < 4
+  )
+  // BUG 1 fix: explicit parentheses, aiCount > 0 guard on both conditions
+  const candidateSkipped = aiCount > 0 && (isBlank || isDeclined)
+  void candidateSkipped
+
+  if (aiCount > 0) {
+    if (isBlank && !alreadyReAsked) {
+      console.log('[ai] Blank answer — re-asking once:', lastAiQuestion.substring(0, 60))
+      return {
+        nextQuestion: `I didn't quite catch that — ${lastAiQuestion}`,
+        isComplete: false,
+        topicArea: 'technical',
+      }
+    }
+    if (isDeclined || (isBlank && alreadyReAsked)) {
+      console.log('[ai] Candidate declined/skipped — acknowledging and moving on')
+    }
+  }
+
+  const needsAcknowledgement = aiCount > 0 && (isDeclined || (isBlank && alreadyReAsked))
+  const lastCandidateText = lastCandidateAnswer || 'nothing yet'
+
+  // BLOCK 4 — askedList without truncation (BUG 5)
   const askedList = conversationHistory
     .filter(m => m.role === 'ai')
-    .map((m, i) => `${i + 1}. ${m.text.substring(0, 80)}`)
-    .join('\n');
+    .map((m, i) => `Q${i + 1}: ${m.text}`)
+    .join('\n')
 
-  const systemPrompt = `You are ${interviewerName}, a senior interviewer at AccionHire conducting a Round 1 technical screening for ${jobTitle}.
-${jdSkills ? `Key skills to assess: ${jdSkills}` : ''}
+  const previousAiQuestions = conversationHistory
+    .filter(m => m.role === 'ai')
+    .map(m => m.text)
 
-YOUR TASK FOR THIS TURN:
+  // BLOCK 5 — getTopicInstruction using all RAG data (BUG 10, 13)
+  const getTopicInstruction = (): string => {
+    if (shouldWrapUp) {
+      return `WRAP UP. Thank the candidate warmly and genuinely. Tell them the team will review and reach out with next steps. Set isComplete: true.`
+    }
+    const gapQ        = areasToProbe[Math.min(aiCount, areasToProbe.length - 1)]?.question ?? null
+    const probeArea   = probeAreas[Math.min(aiCount, probeAreas.length - 1)] ?? null
+    const missingSkill = missingSkills[0] ?? null
+
+    if (aiCount === 0) {
+      return `Open warmly. Ask the candidate to introduce themselves and give a brief overview of their hands-on experience with ${skillList}. Keep it friendly and conversational.`
+    }
+    if (aiCount === 1) {
+      return gapQ
+        ? `Ask this resume-gap probe question naturally: "${gapQ}"`
+        : `Ask about a specific project where they used ${skillList}. What was the problem, what did they build, what exact technologies? Insist on specifics.`
+    }
+    if (aiCount === 2) {
+      return probeArea
+        ? `Probe deeply on JD topic "${probeArea}". Test HOW it works, not just awareness of WHAT it is.`
+        : `Pick ONE specific tool or concept from ${skillList}. Ask them to explain how it works under the hood OR how they used it in a real production system.`
+    }
+    if (aiCount === 3) {
+      return missingSkill
+        ? `Candidate resume shows a gap in "${missingSkill}". Ask directly — have they worked with it? If yes: specifics. If no: how would they approach learning it?`
+        : `Ask them to walk through the most technically complex problem they have solved — root cause, debugging steps, what failed, how they fixed it.`
+    }
+    if (aiCount === 4) {
+      const altProbe = probeAreas[1] ?? null
+      return altProbe
+        ? `Go deeper on "${altProbe}" — edge cases, performance trade-offs, or failure modes.`
+        : `Ask a hands-on practical question about a DIFFERENT skill from ${skillList} not yet discussed. "How would you implement X" or "what would you do if Y failed in production".`
+    }
+    if (aiCount === 5) {
+      return `Give a concrete real-world scenario specific to ${jobTitle}: a production bug, a failing test suite, a performance bottleneck, or an architectural decision. Ask how they would handle it step by step. Use ${skillList} as the context.`
+    }
+    if (aiCount === 6) {
+      return `Ask ONE behavioral question tied to ${jobTitle} technical work — a code review disagreement, dealing with technical debt, pushing back on a bad technical decision, or handling a legacy system. Real example, not hypothetical.`
+    }
+    if (aiCount === 7) {
+      return `Ask about technical growth — what from ${skillList} do they want to go deeper on? What have they learned in the last 6 months? How do they stay current in ${jobTitle}?`
+    }
+    return `Ask a focused follow-up on something specific the candidate mentioned in their last answer. Dig into a technical detail they glossed over.`
+  }
+
+  const topicInstruction = getTopicInstruction()
+  const interviewerName = persona?.name ?? 'AccionHire Interviewer'
+
+  // BLOCK 6 — systemPrompt with JD text and forbidden list (BUG 9, 11)
+  const jdSnippet = jobDescription?.trim().substring(0, 600) ?? ''
+
+  const baseSystemPrompt = `You are ${interviewerName}, a senior interviewer at AccionHire conducting a Round 1 screening for ${jobTitle}.
+
+JOB DESCRIPTION (first 600 chars):
+${jdSnippet}
+
+ROLE CONTEXT:
+- Job Title: ${jobTitle}
+- Required Skills: ${skillList}
+- Experience Level: ${experienceLevel}
+${matchedSkills.length > 0 ? `- Candidate demonstrated: ${matchedSkills.slice(0, 6).join(', ')}` : ''}
+${missingSkills.length > 0 ? `- Gaps to probe: ${missingSkills.slice(0, 3).join(', ')}` : ''}
+
+YOUR TASK THIS TURN:
 ${topicInstruction}
 
-RULES:
-1. ONE question only
-2. The question MUST be relevant to ${jobTitle} and the skills listed above — do not ask generic CS trivia
-3. Encourage the candidate to think out loud
-4. Sound natural and warm, not like a robot reading a script
-5. NEVER ask anything similar to these already-asked questions:
-${askedList || 'None yet'}
+STRICT RULES — non-negotiable:
+1. ONE question only. Never two questions in one turn.
+2. Every question MUST reference a specific skill from:
+   ${skillList}
+3. FORBIDDEN — never ask these generic questions:
+   ✗ "Tell me about a time you worked in a team"
+   ✗ "What are your strengths and weaknesses"
+   ✗ "Where do you see yourself in 5 years"
+   ✗ "What is agile / scrum / kanban"
+   ✗ "Why do you want to work here"
+   ✗ "What is your experience with software development"
+   ✗ Any question not tied to: ${skillList}
+4. If candidate gave a vague answer, demand specifics:
+   "What exact tools or commands did you use?"
+   "Walk me through the actual implementation."
+5. Sound natural and human — not scripted.
+6. NEVER ask anything similar to questions already asked:
+${askedList || 'None yet — this is the first question.'}
 
-Return ONLY JSON:
-{"nextQuestion": "...", "isComplete": ${shouldWrapUp}, "topicArea": "${shouldWrapUp ? 'wrapup' : 'technical'}"}`;
+RESPONSE FORMAT — return ONLY this JSON, no markdown:
+{"nextQuestion": "...", "isComplete": ${shouldWrapUp}, "topicArea": "${shouldWrapUp ? 'wrapup' : 'technical'}"}`
 
   const finalSystemPrompt = persona
-    ? `${systemPrompt}\n\nStyle: ${persona.systemPrompt.split('\n').slice(0, 5).join(' ')}`
-    : systemPrompt;
+    ? `${baseSystemPrompt}\n\nPERSONA STYLE:\n${persona.systemPrompt.split('\n').slice(0, 8).join('\n')}`
+    : baseSystemPrompt
 
-  const lastCandidateText = conversationHistory
-    .filter(m => m.role === 'candidate')
-    .slice(-1)[0]?.text ?? 'nothing yet';
+  const deduplicatedSystemPrompt = previousAiQuestions.length > 0
+    ? `${finalSystemPrompt}\n\nQUESTIONS YOU ALREADY ASKED (${previousAiQuestions.length} total — do NOT repeat these topics):\n${previousAiQuestions.map((q, i) => `Q${i + 1}: ${q}`).join('\n')}\n\nABSOLUTE RULE: Every new question must explore a completely different aspect not covered above.`
+    : finalSystemPrompt
 
-  const userPrompt = `The candidate just said: "${lastCandidateText}"
+  // BLOCK 7 — userPrompt using forceNewTopicPrompt (BUG 14)
+  const acknowledgementInstruction = needsAcknowledgement
+    ? `The candidate indicated they are not sure or do not know. Start your nextQuestion field with a brief warm acknowledgement (one sentence — e.g. "No worries at all, that is completely fine!" or "That is okay, not everyone has worked with that yet!" or "Thanks for being honest, let us move on.") then immediately ask your next question. Both together form the nextQuestion value.`
+    : ''
 
-Now: ${topicInstruction}
-Ask your question.`;
+  const forceTopicInstruction = forceNewTopicPrompt
+    ? `\nADDITIONAL INSTRUCTION: ${forceNewTopicPrompt}`
+    : ''
 
-  const llmMessages: Array<{ role: "system" | "assistant" | "user"; content: string }> = isTestMode
-    ? [
-        { role: "system", content: finalSystemPrompt },
-        { role: "user", content: userPrompt },
-      ]
-    : [
-        { role: "system", content: finalSystemPrompt },
-        ...conversationHistory.map(m => ({
-          role: (m.role === "ai" ? "assistant" : "user") as "assistant" | "user",
-          content: m.text,
-        })),
-        { role: "user", content: userPrompt },
-      ];
+  const userPrompt = `CANDIDATE'S LAST ANSWER:
+"${lastCandidateText}"
 
-  console.log(`[ai] Sending ${llmMessages.length} messages to LLM (${conversationHistory.length} history turns)`);
+${acknowledgementInstruction}${forceTopicInstruction}
 
+YOUR TASK:
+${topicInstruction}
+
+REMEMBER:
+- Role: ${jobTitle}
+- Core skills to assess: ${skillList}
+- Questions asked so far: ${aiCount} of 8
+- Ask ONE specific, technical, role-relevant question.
+- Return ONLY JSON: {"nextQuestion": "...", "isComplete": ${shouldWrapUp}, "topicArea": "..."}`
+
+  // BLOCK 8 — always include full history, even in test mode (BUG 6)
+  const llmMessages: Array<{ role: "system" | "assistant" | "user"; content: string }> = [
+    { role: "system", content: deduplicatedSystemPrompt },
+    ...conversationHistory.map(m => ({
+      role: (m.role === "ai" ? "assistant" : "user") as "assistant" | "user",
+      content: m.text,
+    })),
+    { role: "user", content: userPrompt },
+  ]
+
+  console.log(`[ai] turn=${aiCount} history=${conversationHistory.length} msgs=${llmMessages.length} declined=${needsAcknowledgement} testMode=${isTestMode} wrapUp=${shouldWrapUp}`)
+
+  // BLOCK 9 — LLM call at 0.7 temperature (BUG 8, 15)
   try {
     const response = await openai.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       max_tokens: 400,
-      temperature: 0.85,
+      temperature: 0.7,
       messages: llmMessages,
-    });
+    })
 
-    const content = response.choices[0]?.message?.content ?? "{}";
-    const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No JSON found in response");
+    const content = response.choices[0]?.message?.content ?? "{}"
+    const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim()
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) throw new Error(`No JSON in LLM response: ${cleaned.substring(0, 100)}`)
 
-    let result = JSON.parse(jsonMatch[0]) as ConversationResult;
+    let result = JSON.parse(jsonMatch[0]) as ConversationResult
 
     if (shouldWrapUp) {
-      result.isComplete = true;
-      result.topicArea = 'wrapup';
+      result.isComplete = true
+      result.topicArea = 'wrapup'
     }
 
-    if (!isTestMode && !result.isComplete) {
-      const allPreviousQuestions = conversationHistory
-        .filter(m => m.role === 'ai')
-        .map(m => m.text.toLowerCase());
+    // BLOCK 10 — tightened dedup with skill-based fallbacks (BUG 7, 12)
+    if (!result.isComplete) {
+      const stopWords = new Set([
+        'could','would','about','their','which','there','where',
+        'being','having','please','provide','specific','details',
+        'recent','example','question','candidate','interviewer',
+        'something','different','tell','your','have','that','this',
+        'what','when','with','from','more','some','just','been',
+        'they','them','will','also','very','know','like','good',
+        'make','dont','didn','hasn','wasn','aren','okay','great',
+        'sure','thanks','thank','worry','fine','completely',
+        'absolutely','understand','next','does','into','over',
+        'after','before','should','would','might',
+      ])
 
-      const isExactRepeat = allPreviousQuestions.some(
-        prev => prev.substring(0, 60) === result.nextQuestion.toLowerCase().substring(0, 60)
-      );
+      const strippedQuestion = result.nextQuestion
+        .replace(/^(no worries|that'?s? (okay|fine|alright)|thanks for being honest|not everyone has|absolutely fine|no problem|that is completely)[^.!?]*[.!?]\s*/i, '')
+        .trim()
 
-      const topicWords = result.nextQuestion.toLowerCase()
-        .split(' ')
-        .filter(w => w.length > 5)
-        .filter(w => !['could', 'would', 'about', 'their', 'which', 'there', 'where', 'being', 'having', 'please', 'provide', 'specific', 'details', 'recent', 'example', 'question', 'candidate', 'interviewer', 'something', 'different'].includes(w));
+      const newQWords = strippedQuestion
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(w => w.length > 3 && !stopWords.has(w))
 
-      const isSimilar = allPreviousQuestions.some(prev => {
-        const matches = topicWords.filter(w => prev.includes(w)).length;
-        return topicWords.length > 0 && matches >= 4 && (matches / topicWords.length) >= 0.6;
-      });
+      const isExactRepeat = previousAiQuestions.some(
+        prev => prev.substring(0, 60).toLowerCase() === strippedQuestion.substring(0, 60).toLowerCase()
+      )
+
+      const isSimilar = !isExactRepeat && previousAiQuestions.some(prev => {
+        const matches = newQWords.filter(w => prev.toLowerCase().includes(w)).length
+        const ratio = newQWords.length > 0 ? matches / newQWords.length : 0
+        return matches >= 3 && ratio >= 0.40
+      })
 
       if (isExactRepeat || isSimilar) {
-        console.warn('[ai] Duplicate detected — using fallback');
+        console.warn(`[ai] DUPLICATE at turn ${aiCount} (exact=${isExactRepeat} similar=${isSimilar}) — skill-based fallback`)
 
         const fallbacks: Record<number, string> = {
-          0: `Tell me about yourself and what drew you to ${jobTitle}.`,
-          1: `What technologies, tools, or platforms have you worked with in ${jobTitle}?`,
-          2: `Walk me through a core concept in ${jobTitle} that you think every practitioner should understand.`,
-          3: `Tell me about a specific piece of work or project you did — what was the problem and how did you solve it?`,
-          4: `What is one area of ${jobTitle} you feel confident in, and one area you are still learning?`,
-          5: `Describe a time something went wrong in your work. How did you investigate and fix it?`,
-          6: `Tell me about a time you had to work with someone difficult or handle conflicting priorities.`,
-          7: `What do you want to learn or improve in the next 1–2 years as a ${jobTitle}?`,
-        };
-
-        const fallbackQuestion = fallbacks[aiCount] ?? "Could you tell me more about your experience?";
+          0: `Tell me about yourself and your hands-on experience with ${skillList}.`,
+          1: `Walk me through a specific project where you used ${allSkills[0] ?? skillList}. What exactly did you build and what was your role?`,
+          2: `How does ${allSkills[1] ?? allSkills[0] ?? skillList} work in practice? Give me a real example of how you have applied it.`,
+          3: `What is the most technically complex problem you have solved in ${jobTitle} work? Walk me through your debugging process step by step.`,
+          4: `In a production ${jobTitle} environment, what would you do if ${allSkills[2] ?? allSkills[0] ?? skillList} started behaving unexpectedly? What is your investigation process?`,
+          5: `Give me a specific example of a difficult technical decision you made in ${jobTitle}. What were the trade-offs and what did you choose?`,
+          6: `Tell me about a time something you built broke in production. What was the root cause and how did you prevent it happening again?`,
+          7: `What is one area of ${skillList} you want to go deeper on in the next 12 months, and what is your plan?`,
+        }
 
         return {
-          nextQuestion: fallbackQuestion,
-          isComplete: shouldWrapUp,
-          topicArea: shouldWrapUp ? 'wrapup' : 'technical',
-        };
+          nextQuestion: fallbacks[aiCount] ?? `Can you walk me through how you approach ${skillList} in day-to-day ${jobTitle} work?`,
+          isComplete: false,
+          topicArea: 'technical',
+        }
       }
     }
 
-    return result;
+    return result
+
   } catch (err) {
-    console.error("Interview conversation generation failed:", err);
+    // BUG 15 fix: log full context for Railway debugging
+    console.error(`[ai] LLM call failed — turn=${aiCount} history=${conversationHistory.length} job=${jobTitle}`, err)
   }
 
+  // BLOCK 11 — error fallback
   return {
     nextQuestion: shouldWrapUp
-      ? "Thank you so much for your time today. It was great speaking with you. Our team will review your interview and reach out with next steps soon. Best of luck!"
-      : `Could you walk me through how you would approach a typical problem in ${jobTitle}?`,
+      ? "Thank you so much for your time today. It was a great conversation. Our team will review your interview and reach out with next steps soon. Best of luck!"
+      : `Can you walk me through a specific example of your experience with ${skillList}?`,
     isComplete: shouldWrapUp,
     topicArea: shouldWrapUp ? "wrapup" : "technical",
-  };
+  }
 }
 
 // ─── LLM 6 — Answer Quality Monitor ─────────────────────────────────────────
