@@ -15,6 +15,6 @@ router.use(interviewsRouter);
 router.use(botRouter);
 router.use(pdfRouter);
 router.use(livekitRouter);
-router.use('/api/tts', ttsRouter);
+router.use('/tts', ttsRouter);
 
 export default router;

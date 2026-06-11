@@ -18,7 +18,9 @@
       "Bash(npm run *)",
       "Bash(git commit *)",
       "Bash(pnpm approve-builds *)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(dir -Recurse -Filter \"*.ts\" -Path \".\" -Exclude \"node_modules\")",
+      "Bash(Select-Object -First 30)"
     ]
   }
 }

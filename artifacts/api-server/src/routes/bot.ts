@@ -152,7 +152,7 @@ router.post("/bot/submit-interview", BotApiKeyMiddleware, async (req, res): Prom
       strengths: evaluation.strengths,
       improvements: evaluation.improvements,
       summary: evaluation.recommendation,
-      recruiterNote: null,
+      recruiterNote: '',
     })
     .returning();
 
